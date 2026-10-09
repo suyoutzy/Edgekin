@@ -1,0 +1,20 @@
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#20211f;background:#f7f6f1}
+*{box-sizing:border-box}
+html,body{margin:0;min-width:640px;min-height:100%}
+body{height:100vh;overflow:hidden;background:radial-gradient(circle at 78% 21%,#fff 0,#f7f6f1 42%,#f0eee6 100%)}
+.intro{position:fixed;z-index:1;left:clamp(28px,5vw,90px);top:clamp(28px,5vh,64px);max-width:590px;pointer-events:none}
+.eyebrow{font-size:11px;letter-spacing:.25em;font-weight:800;color:#a26040}
+h1{font-size:clamp(27px,3vw,49px);line-height:1.16;letter-spacing:-.055em;margin:17px 0 14px}
+.intro p{max-width:450px;font-size:14px;line-height:1.7;color:#777970;margin:0}
+#playfield{position:relative;width:100vw;height:100vh}
+.ledge{position:absolute;width:clamp(150px,11vw,190px);height:clamp(104px,11vh,130px);padding:18px 17px;border:1px solid #deddd4;border-radius:0 0 18px 18px;background:#fff;box-shadow:0 14px 35px rgba(41,37,25,.08)}
+.ledge-one{left:10%;top:69%}
+.ledge-two{left:28%;top:62%}
+.ledge-three{left:46%;top:55%}
+.ledge-four{left:64%;top:48%}
+.number{font-size:10px;letter-spacing:.13em;font-weight:800;color:#d2724b}
+.ledge h2{font-size:17px;letter-spacing:-.04em;margin:12px 0 5px}
+.ledge p{color:#8a8b84;font-size:11px;line-height:1.45;margin:0}
+footer{position:fixed;left:clamp(28px,5vw,90px);bottom:21px;color:#a3a49c;font-size:11px;pointer-events:none}
+@media(max-height:650px){.intro{top:20px}.intro p{display:none}.ledge{height:94px;padding:12px 15px}.ledge h2{margin:7px 0 3px}}
+@media(max-width:800px){.intro{max-width:460px}.ledge-one{left:7%}.ledge-two{left:29%}.ledge-three{left:51%}.ledge-four{left:73%}.ledge{width:150px;padding:12px}}

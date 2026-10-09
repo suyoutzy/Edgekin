@@ -1,0 +1,10 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><title>Edgekin 有效轮廓分母验证</title>
+<style>body{margin:0;background:white;color:#1f2328;font:16px system-ui}#grid{position:absolute;left:30px;top:140px;display:grid;grid-template-columns:repeat(20,18px);gap:16px}.icon{display:inline-block;width:18px;height:18px;line-height:18px;font-size:14px;border:1px solid #d0d7de;border-radius:3px;box-sizing:border-box}.report{padding:20px}</style>
+<div class="report" data-edgekin-ignore><h2>300 个符合规则的独立轮廓</h2><p id="result"></p><pre id="metrics"></pre></div><div id="grid"></div>
+<script type="module">
+import {scanPage} from '/dist/scanner.js';
+for(let i=0;i<300;i++){const icon=document.createElement('span');icon.className='icon';icon.textContent='★';document.querySelector('#grid').append(icon)}
+const begin=performance.now();const world=scanPage(document.body);const scanMs=performance.now()-begin;
+document.querySelector('#metrics').textContent=JSON.stringify({...world.contourStats,scanMs});
+document.querySelector('#result').textContent=`实际选择 ${world.shapes.length} / 全部有效 ${world.contourStats.eligibleCount}，复杂度 ${world.contourStats.complexityPercent}%`;
+</script></html>

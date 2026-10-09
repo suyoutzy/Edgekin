@@ -1,0 +1,8 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Edgekin 0.2 轮廓压力验证</title>
+<style>body{margin:0;background:white;color:#242424;font:16px system-ui}.report{padding:20px 30px;max-width:800px}#grid{position:absolute;left:30px;top:160px;display:grid;grid-template-columns:repeat(20,18px);gap:16px}.icon{display:block;width:18px;height:18px;line-height:18px;font-size:14px;text-align:center;border:1px solid #ced8e3;border-radius:3px;box-sizing:border-box;background:#eff4fa}.icon:nth-child(4n){border-radius:50%}</style>
+<header class="report" data-edgekin-ignore><h2>300 个有效轮廓，最多保留 240 个</h2><p>用于记录生成分阶段耗时与运行帧时间。暂停停止绘制，读取统计不会重新扫描。</p></header><main id="grid"></main>
+<script type="module">
+import {mountEdgekin} from '/dist/index.js';
+for(let i=0;i<300;i++){const icon=document.createElement('span');icon.className='icon';icon.textContent=['★','♥','◆','⚙'][i%4];document.querySelector('#grid').append(icon)}
+window.edgekin=mountEdgekin();
+</script></html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh">
+<meta charset="utf-8">
+<title>Edgekin 控件轮廓验证</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#fff;color:#1f2328;font:16px system-ui}
+  main{display:grid;grid-template-columns:540px 540px;gap:36px;padding:110px 30px 24px}
+  h3{margin:0 0 18px;font-size:18px}.case{min-height:125px}
+  button{display:inline-flex;gap:10px;align-items:center;height:38px;padding:0 14px;border:1px solid #cdd4dc;border-radius:8px;background:#f6f8fa;font:inherit;color:inherit}
+  .icon{display:inline-block;width:16px;height:16px;line-height:16px;font-size:14px;flex-shrink:0}
+  .joined{display:flex;width:max-content}.joined button+button{margin-left:-1px;border-radius:0 8px 8px 0;padding:0 12px}.joined button:first-child{border-radius:8px 0 0 8px}
+  .reaction-strip{display:flex;gap:2px;align-items:center;width:506px;height:40px;border:1px solid #cdd4dc;border-radius:22px;padding:2px;background:white}
+  .reaction-strip button{height:34px;padding:0 9px;border-radius:20px;background:white;gap:6px}
+  .card{height:180px;border:1px solid #cdd4dc;border-radius:12px;padding:50px;background:#f6f8fa}.card .icon{width:24px;height:24px;line-height:24px;font-size:22px}
+  .toolbar{position:fixed;top:20px;left:30px;max-width:700px;display:flex;gap:12px;align-items:center;font-size:13px;background:white}
+  #metrics{display:none}
+</style>
+<div class="toolbar" data-edgekin-ignore><button id="start">显示地图</button><span id="result"></span><pre id="metrics"></pre><pre id="run-metrics" style="display:none"></pre></div>
+<main>
+  <section class="case"><h3 data-edgekin-ignore>Sponsor：只留整体外框</h3><button id="sponsor"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 14 1 7C-2 0 5-1 8 4c3-5 10-4 7 3Z" fill="#db61a2"/></svg>Sponsor</button></section>
+  <section class="case"><h3 data-edgekin-ignore>Star ＋ 下拉：接缝归并</h3><div class="joined" id="star"><button><span class="icon">★</span>Star</button><button aria-label="Star 选项"><span class="icon">▼</span></button></div></section>
+  <section class="case"><h3 data-edgekin-ignore>反应条：不画无用内部 emoji 框</h3><div class="reaction-strip" id="reactions"><button><span class="icon">👍</span>66</button><button><span class="icon">😄</span>8</button><button><span class="icon">🎉</span>9</button><button><span class="icon">❤️</span>9</button><button><span class="icon">🚀</span>9</button><button><span class="icon">👀</span>10</button></div></section>
+  <section class="case"><h3 data-edgekin-ignore>圆形 SVG：只留外圈</h3><svg id="ring" width="32" height="32" viewBox="0 0 32 32" role="img"><circle cx="16" cy="16" r="15" fill="#eff5ff" stroke="#647eaa"/><circle cx="16" cy="16" r="8" fill="#b6c9f3"/></svg></section>
+  <section class="case"><h3 data-edgekin-ignore>独立小图标：保留</h3><span class="icon" id="isolated">★</span></section>
+  <section class="case"><h3 data-edgekin-ignore>大卡片内部有空间：保留物件</h3><div class="card" id="card"><span class="icon">★</span></div></section>
+</main>
+<script type="module">
+  import {mountEdgekin} from '/dist/index.js';
+  import {scanPage} from '/dist/scanner.js';
+  const game=mountEdgekin();
+  window.edgekin=game;
+  const w=scanPage(document.body);
+  const inside=id=>{const b=document.querySelector(id).getBoundingClientRect();return w.shapes.filter(s=>s.left>=b.left-.5&&s.right<=b.right+.5&&s.top>=b.top-.5&&s.bottom<=b.bottom+.5).length};
+  const metrics={sponsor:inside('#sponsor'),star:inside('#star'),reactions:inside('#reactions'),ring:inside('#ring'),isolated:inside('#isolated'),card:inside('#card'),coverage:w.contourStats};
+  document.querySelector('#metrics').textContent=JSON.stringify(metrics);
+  document.querySelector('#result').textContent=`Sponsor ${metrics.sponsor} / Star ${metrics.star} / 反应条 ${metrics.reactions} / 圆形 ${metrics.ring} / 独立图标 ${metrics.isolated} / 卡片 ${metrics.card}`;
+  document.querySelector('#start').onclick=async()=>{await game.start();document.querySelector('#run-metrics').textContent=JSON.stringify(game.getMapStats())};
+</script>
+</html>

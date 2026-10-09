@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Edgekin sparse page</title>
+<style>body{margin:0;min-height:100vh;background:#12161b;color:white;font:16px system-ui}header{padding:32px}button{padding:8px 14px}</style>
+<header>
+  <h1>普通的空白网页</h1>
+  <p>页面没有可供跳跃的内容块，也应该可以生成可通关地图。</p>
+  <button id="inject">启用 / 关闭 Edgekin</button>
+</header>
+<script>
+  document.querySelector('#inject').onclick = () => {
+    const script = document.createElement('script');
+    script.src = '/extension/content.js';
+    document.body.append(script);
+    script.onload = () => script.remove();
+  };
+</script>
+</html>

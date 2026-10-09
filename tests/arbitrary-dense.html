@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Edgekin dense page</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#e9eff3;color:#173245;font:16px system-ui}
+  header{padding:25px 5%}h1{margin:0 0 8px}button{background:purple!important;color:yellow!important;padding:10px;border:0}
+  .card{position:absolute;width:180px;height:115px;background:#fff;border:2px solid #adc5d1;border-radius:14px;padding:14px;box-shadow:0 8px 20px #8397a333}
+  .card:nth-child(1){left:12%;top:70%}.card:nth-child(2){left:30%;top:63%}
+  .card:nth-child(3){left:48%;top:56%}.card:nth-child(4){left:66%;top:49%}
+</style>
+<header><h1>随手写的一页笔记</h1><p>这些普通卡片不带游戏标记，边缘也能成为地图。</p><button id="inject">启用 / 关闭 Edgekin</button></header>
+<main><div class="card">灵感</div><div class="card">实验</div><div class="card">记录</div><div class="card">结果</div></main>
+<script>
+  document.querySelector('#inject').onclick = () => {
+    const script = document.createElement('script');
+    script.src = '/extension/content.js';
+    document.body.append(script);
+    script.onload = () => script.remove();
+  };
+</script>
+</html>

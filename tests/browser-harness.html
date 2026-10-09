@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Edgekin browser harness</title>
+<style>
+  body{margin:0;font:16px system-ui;background:#faf9f6}
+  #toolbar{position:fixed;z-index:2;left:20px;top:20px;display:flex;gap:8px}
+  #field{position:absolute;left:10%;top:69%;width:190px;height:120px;background:white;border:1px solid #aaa}
+  #field article{position:absolute;width:190px;height:120px;background:white;border:1px solid #aaa}
+  #field article:nth-child(1){left:18vw;top:-7vh}
+  #field article:nth-child(2){left:36vw;top:-14vh}
+  #field article:nth-child(3){left:54vw;top:-21vh}
+</style>
+<div id="toolbar">
+  <button id="mount">Mount</button>
+  <button id="destroy">Destroy</button>
+  <input id="host-input" placeholder="Host input">
+</div>
+<main id="field"><article></article><article></article><article></article></main>
+<script type="module">
+  import { mountEdgekin } from '/dist/index.js';
+  let game;
+  document.querySelector('#mount').onclick = () => { game?.destroy(); game = mountEdgekin({root:document.querySelector('#field')}); };
+  document.querySelector('#destroy').onclick = () => { game?.destroy(); game = undefined; };
+</script>
+</html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edgekin · 网页边缘的小冒险</title>
+  <link rel="stylesheet" href="/demo/style.css">
+</head>
+<body>
+  <header class="intro">
+    <div class="eyebrow">EDGEKIN / A TINY BREAK</div>
+    <h1>让网页的边缘<br>变成一场小冒险。</h1>
+    <p>点击「开始」。用 ←/→ 移动、↑ 跳跃或借墙反跳、↓ 下蹲；通关后长按 ↓ 开启新关卡。</p>
+  </header>
+
+  <main id="playfield" aria-label="Edgekin 演示关卡">
+    <article class="ledge ledge-one">
+      <div class="number">01 / 起步</div>
+      <h2>落在这里</h2>
+      <p>卡片的上沿就是落脚点。</p>
+    </article>
+    <article class="ledge ledge-two">
+      <div class="number">02 / 跳跃</div>
+      <h2>轻轻一跃</h2>
+      <p>越过空隙，别掉下去。</p>
+    </article>
+    <article class="ledge ledge-three">
+      <div class="number">03 / 继续</div>
+      <h2>再进一步</h2>
+      <p>角色会落在内容边缘。</p>
+    </article>
+    <article class="ledge ledge-four">
+      <div class="number">04 / 抵达</div>
+      <h2>终点见</h2>
+      <p>一段很短的桌面休息。</p>
+    </article>
+  </main>
+
+  <footer>网页元素提供地形 · 关卡通过角色物理模拟验证 · Edgekin 0.2</footer>
+  <script type="module">
+    import { mountEdgekin } from '/dist/index.js';
+    const edgekin = mountEdgekin({ root: document.querySelector('#playfield') });
+    window.edgekin = edgekin;
+  </script>
+</body>
+</html>

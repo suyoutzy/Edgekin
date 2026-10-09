@@ -1,0 +1,33 @@
+{
+  "name": "edgekin",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "A tiny platform game on the edges of web content",
+  "license": "MIT",
+  "author": "suyoutzy",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/suyoutzy/Edgekin.git"
+  },
+  "homepage": "https://github.com/suyoutzy/Edgekin#readme",
+  "bugs": {
+    "url": "https://github.com/suyoutzy/Edgekin/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build:core && npm run build:extension",
+    "build:core": "tsc -p tsconfig.json",
+    "build:extension": "esbuild src/extension.ts --bundle --format=iife --platform=browser --target=chrome110,edge110 --minify --outfile=extension/content.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "dev": "npm run build:core -- --watch",
+    "serve": "node tools/serve.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,25 @@
+# Dependencies and generated output
+/node_modules/
+/dist/
+/extension/content.js
+*.tsbuildinfo
+
+# Private development records, backups and browser profiles
+/local-process/
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+.npmrc
+*.pem
+*.key
+
+# Logs, coverage and editor/OS files
+*.log
+/coverage/
+/.cache/
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
