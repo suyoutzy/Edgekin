@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <meta charset="utf-8">
-<title>Edgekin 0.2 动作验证</title>
+<title>Edgekin 动作验证</title>
 <style>
   *{box-sizing:border-box}body{margin:0;background:#fafafa;color:#242424;font:16px system-ui}
   header{padding:28px 36px;max-width:720px}h1{font-size:24px}p{line-height:1.7}
@@ -14,7 +14,7 @@
   #turn{left:950px;top:190px;width:150px;height:40px}
   .badge{position:absolute;top:480px;left:1100px;width:30px;height:30px;border-radius:50%;background:#cbdaf1}
 </style>
-<header data-edgekin-ignore><h1>动作验证场</h1><p>←/→ 移动；↑ 跳跃，贴墙时再次按 ↑ 借墙反跳；↓ 下蹲穿过低处。暂停面板可以回起点。</p><input id="host-input" placeholder="点击这里检查自动暂停"><button id="layout">移动网页障碍</button></header>
+<header data-edgekin-ignore><h1>动作验证场</h1><p>←/→ 移动；↑ 跳跃，贴墙时再次按 ↑ 借墙反跳；↓ 下蹲穿过低处。暂停面板可以重新计分或换关。</p><input id="host-input" placeholder="点击这里检查自动暂停"><button id="layout">移动网页障碍</button></header>
 <main><div id="floor" class="block">低矮通道地面</div><div id="beam" class="block">横梁</div><div id="launch" class="block">起跳边</div><div id="wall" class="block">借墙到高处</div><div id="upper" class="block">高处落脚边</div><div id="turn" class="block">折返</div><span class="badge"></span></main>
 <script type="module">
   import {mountEdgekin} from '/dist/index.js';

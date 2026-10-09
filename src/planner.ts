@@ -12,7 +12,7 @@ export interface SelectionOptions {
   requiredPlatform?: number;
   graph?: Map<number, JumpRecipe[]>;
 }
-function randomUnit(): number {
+export function randomUnit(): number {
   if (typeof crypto !== 'undefined') return crypto.getRandomValues(new Uint32Array(1))[0]! / 4294967296;
   return Math.random();
 }

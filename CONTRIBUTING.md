@@ -28,6 +28,7 @@ npm test
 - 修复碰撞或可达性问题时，用完整碰撞世界重放动作，不只检查规划器返回的标记。
 - 修改扫描规则时同时检查清理结果、有效轮廓总数与复杂度分母。
 - 保持暂停、输入焦点、重复挂载和销毁时的资源释放。
+- 新奖励从当前人物位置验证可达性；动态物体与目标规划使用同一游戏时间和碰撞，不用页面扫描代替目标刷新。
 - 行为改变应更新相应公开文档和 `CHANGELOG.md`；回归测试应覆盖真实风险。
 
 ## 浏览器验证页面
@@ -41,6 +42,7 @@ npm test
 | `/tests/contours-harness.html` | 嵌套卡片、圆形图标和随机开口 |
 | `/tests/controls-harness.html` | 组合按钮、反应条、控件内部图标清理 |
 | `/tests/coverage-harness.html` | 有效轮廓覆盖统计 |
+| `/tests/collect-harness.html` | 连续收集、分数、巡逻物、暂停冻结、返回点；`?hazards=0` 对比无障碍，`?mode=course` 检查通关模式 |
 | `/tests/actions-harness.html` | 蹲行、墙跳、竖向路线和布局变化；建议 1920×1080 |
 | `/tests/performance-harness.html` | 300 个有效候选、240 个运行轮廓的压力场景 |
 | `/tests/arbitrary-dense.html`、`/tests/arbitrary-sparse.html` | 密集与稀疏页面布局 |

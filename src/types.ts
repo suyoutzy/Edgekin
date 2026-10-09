@@ -116,3 +116,27 @@ export interface Level {
   usedFallback?: boolean;
   metrics?: RouteMetrics;
 }
+
+export interface Patrol {
+  id: number;
+  platformId: number;
+  left: number;
+  right: number;
+  footY: number;
+  radius: number;
+  period: number;
+  phase: number;
+}
+
+export interface RewardTarget {
+  platformId: number;
+  x: number;
+  footY: number;
+  route: number[];
+  /** A witness replayed against the full world and patrol clock. */
+  actions: Controls[];
+  startTime: number;
+  jumpCount: number;
+  wallJumpCount: number;
+  crouchCount: number;
+}

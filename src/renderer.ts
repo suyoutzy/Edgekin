@@ -1,8 +1,18 @@
-import type { Level, Player } from './types.js';
+import type { Level, Patrol, Player, RewardTarget } from './types.js';
 import { surfaceY } from './geometry.js';
 import { bodyHeight } from './physics.js';
+import { patrolPosition } from './hazards.js';
 
-type FeedbackType = NonNullable<Player['event']> | 'respawn' | 'complete';
+type FeedbackType = NonNullable<Player['event']> | 'respawn' | 'complete' | 'collect' | 'hit';
+
+interface RunView {
+  mode: 'collect' | 'course';
+  target: RewardTarget | null;
+  checkpoint: Player | null;
+  patrols: readonly Patrol[];
+  seconds: number;
+  invulnerable: boolean;
+}
 
 export class Renderer {
   private readonly context: CanvasRenderingContext2D;
@@ -30,7 +40,8 @@ export class Renderer {
     this.context.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
 
-  draw(level: Level | null, player: Player | null, moving: boolean, time: number, crouching = false): void {
+  draw(level: Level | null, player: Player | null, moving: boolean, time: number,
+    crouching = false, run?: RunView): void {
     const context = this.context;
     context.clearRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
     if (!level || !player) return;
@@ -112,8 +123,14 @@ export class Renderer {
 
     const start = world.platforms.find(platform => platform.id === level.startId);
     const goal = world.platforms.find(platform => platform.id === level.goalId);
-    if (start) this.drawFlag(level.startX, surfaceY(start, level.startX, world), 'START', '#333333', size);
-    if (goal) this.drawFlag(level.goalX, surfaceY(goal, level.goalX, world), 'GOAL', '#d94e35', size);
+    if (run?.mode === 'collect') {
+      if (run.checkpoint) this.drawFlag(run.checkpoint.x, run.checkpoint.footY, '返回点', '#278257', size);
+      if (run.target) this.drawCoin(run.target.x, run.target.footY - size * .55, size, run.seconds);
+      for (const patrol of run.patrols) this.drawPatrol(patrol, run.seconds);
+    } else {
+      if (start) this.drawFlag(level.startX, surfaceY(start, level.startX, world), 'START', '#333333', size);
+      if (goal) this.drawFlag(level.goalX, surfaceY(goal, level.goalX, world), 'GOAL', '#d94e35', size);
+    }
 
     const x = player.x;
     const pose = bodyHeight(world, player.crouching ?? crouching);
@@ -127,6 +144,7 @@ export class Renderer {
     context.lineWidth = Math.max(2.5, size * 0.09);
     context.lineCap = 'round';
     context.lineJoin = 'round';
+    if (run?.invulnerable) context.globalAlpha = Math.sin(run.seconds * 24) > 0 ? .45 : 1;
     context.beginPath();
     context.arc(x, top + pose * 0.16, size * 0.11, 0, Math.PI * 2);
     context.fill();
@@ -144,6 +162,7 @@ export class Renderer {
     context.moveTo(x, hipY);
     context.lineTo(x + pose * 0.16, player.footY - (airborne ? pose * 0.16 : 0) + swing);
     context.stroke();
+    context.globalAlpha = 1;
     context.shadowBlur = 0;
     if (player.wallSide && !player.crouching && airborne) {
       context.font = 'bold 14px system-ui';
@@ -157,15 +176,66 @@ export class Renderer {
     for (const effect of this.effects) {
       const progress = Math.max(0, Math.min(1, (time - effect.time) / 240));
       context.globalAlpha = 1 - progress;
-      context.strokeStyle = effect.type === 'ceiling' ? '#d94e35' : '#0797c9';
+      context.strokeStyle = effect.type === 'ceiling' || effect.type === 'hit' ? '#d94e35' :
+        effect.type === 'collect' ? '#d69b00' : '#0797c9';
       context.lineWidth = 2;
       context.beginPath();
       const radius = size * (.12 + progress * .6);
       context.arc(effect.x, effect.type === 'ceiling' ? effect.y - pose : effect.y,
         radius, effect.type === 'land' ? Math.PI : 0, Math.PI * 2);
       context.stroke();
+      if (effect.type === 'collect') {
+        context.font = 'bold 16px system-ui';
+        context.textAlign = 'center';
+        context.fillStyle = '#b67c00';
+        context.fillText('+1', effect.x, effect.y - size * (1 + progress));
+      }
     }
     context.globalAlpha = 1;
+  }
+
+  private drawCoin(x: number, y: number, size: number, seconds: number): void {
+    const context = this.context;
+    const radius = size * .24;
+    context.shadowColor = 'rgba(255,255,255,.95)';
+    context.shadowBlur = 5;
+    context.fillStyle = '#ffd54a';
+    context.strokeStyle = '#a76b00';
+    context.lineWidth = 2;
+    context.beginPath();
+    context.ellipse(x, y, radius * (.7 + .3 * Math.cos(seconds * 4) ** 2), radius, 0, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.shadowBlur = 0;
+    context.fillStyle = '#825500';
+    context.font = `bold ${Math.round(size * .3)}px system-ui`;
+    context.textAlign = 'center';
+    context.fillText('1', x, y + size * .1);
+  }
+
+  private drawPatrol(patrol: Patrol, seconds: number): void {
+    const context = this.context;
+    const { x, y } = patrolPosition(patrol, seconds);
+    context.fillStyle = '#e4443f';
+    context.strokeStyle = '#982823';
+    context.lineWidth = 2;
+    context.shadowColor = 'white';
+    context.shadowBlur = 4;
+    context.beginPath();
+    context.arc(x, y, patrol.radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.shadowBlur = 0;
+    context.font = `bold ${Math.round(patrol.radius * 1.6)}px system-ui`;
+    context.textAlign = 'center';
+    context.fillStyle = '#ffffff';
+    context.fillText('!', x, y + patrol.radius * .55);
+    context.fillStyle = '#b33d36';
+    for (const endpoint of [patrol.left, patrol.right]) {
+      context.beginPath();
+      context.arc(endpoint, patrol.footY + 4, 2, 0, Math.PI * 2);
+      context.fill();
+    }
   }
 
   private drawFlag(x: number, y: number, label: string, color: string, size: number): void {

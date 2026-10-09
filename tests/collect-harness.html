@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edgekin 连续收集与巡逻障碍验证</title>
+<style>
+  body{margin:0;background:#fafafa;color:#242424;font:16px system-ui}
+  header{padding:28px 36px;max-width:850px}h1{font-size:26px}p{line-height:1.8}
+  #floor{position:absolute;left:80px;top:70vh;width:calc(100vw - 160px);height:80px;
+    box-sizing:border-box;border:1px solid #afbdc9;background:#edf2f5;padding:24px}
+</style>
+<header data-edgekin-ignore>
+  <h1>沿网页收集下一枚硬币</h1>
+  <p>←/→ 移动，↑ 跳跃或借墙，↓ 下蹲。金色硬币每枚 +1；红球在长平台上巡逻，触碰后回返回点，分数保留。</p>
+  <input id="host-input" placeholder="点击检查自动暂停">
+  <button id="layout">移动网页平台</button>
+</header>
+<main id="field"><div id="floor">这是一块真实网页元素；它的边沿由扫描器生成地形。</div></main>
+<script type="module">
+  import {mountEdgekin} from '/dist/index.js';
+  const params=new URLSearchParams(location.search);
+  // Manual frame delivery is opt-in for deterministic browser regression checks.
+  if(params.has('manual')){
+    let time=performance.now(),next=0;
+    const queue=new Map();
+    window.requestAnimationFrame=callback=>{const id=++next;queue.set(id,callback);return id};
+    window.cancelAnimationFrame=id=>queue.delete(id);
+    window.stepEdgekinFrame=()=>{time=Math.max(time,performance.now())+1000/60;
+      const callbacks=[...queue.values()];queue.clear();for(const callback of callbacks)callback(time)};
+    window.pendingEdgekinFrames=()=>queue.size;
+  }
+  window.scores=[];
+  window.finished=0;
+  window.edgekin=mountEdgekin({root:document.querySelector('#field'),
+    mode:params.get('mode')==='course'?'course':'collect',hazards:params.get('hazards')!=='0',
+    onComplete(){window.finished++},
+    onCollect(score){window.scores.push(score);if(window.pauseOnCoin)window.edgekin.pause()}});
+  document.querySelector('#layout').onclick=()=>{document.querySelector('#floor').style.top='65vh'};
+</script>
+</html>
