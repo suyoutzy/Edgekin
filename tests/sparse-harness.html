@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edgekin 稀疏页面与重叠轮廓验证</title>
+<style>
+  body{margin:0;background:#fff;color:#364653;font:15px system-ui;min-height:1150px}
+  .header{position:absolute;left:0;top:75px;width:100%;height:48px;background:#e9effc;border-bottom:1px solid #a3b7cd}
+  .sidebar{position:absolute;left:0;top:123px;width:200px;height:1000px;background:#fafbfc;border:1px solid #bbc8d2}
+  .card{position:absolute;left:36%;width:40%;box-sizing:border-box;background:#f6f7f8;border:1px solid #bac8d2;border-radius:12px}
+  .summary{top:185px;height:155px;padding:28px}.summary button{margin:15px 10px 0 0}
+  .blank{top:365px;height:275px}.assistant{top:725px;height:285px;padding:24px}
+  .avatar{position:absolute;left:72%;top:685px;width:140px;height:180px;border:1px solid #b5bdcc;background:#d3deef}
+  .input-frame{position:absolute;left:37.4%;top:820px;width:37%;height:80px;border:1px solid #c1c7d0;border-radius:10px}
+  .input-frame textarea{position:absolute;left:7px;top:6px;width:calc(100% - 14px);height:calc(100% - 12px);box-sizing:border-box;border:1px solid #abc}
+  button{padding:8px 16px;border:1px solid #b9c4d1;border-radius:8px;background:white;color:#344c66}
+  .icons{display:flex;gap:12px;margin:24px}.icons span{display:inline-block;width:24px;height:24px;border:1px solid #b5bfd0;border-radius:50%;text-align:center}
+  header[data-edgekin-ignore]{position:absolute;left:24px;top:12px}
+</style>
+<header data-edgekin-ignore>匿名布局验证：空白卡片、交叉头像框、重复输入框。紫色短平台为补充地形。</header>
+<main id="field">
+  <div class="header">　首页　　工具　　设置</div>
+  <aside class="sidebar"><div class="icons"><span>★</span><span>♥</span></div></aside>
+  <section class="card summary">页面内容卡片<br><button>入口一</button><button>入口二</button></section>
+  <section class="card blank"></section>
+  <section class="card assistant">页面助手</section>
+  <div class="avatar"></div>
+  <div class="input-frame"><textarea aria-label="页面输入框" placeholder="点击输入后暂停"></textarea></div>
+</main>
+<script type="module">
+  import {mountEdgekin} from '/dist/index.js';
+  window.edgekin=mountEdgekin({root:document.querySelector('#field')});
+  if(new URLSearchParams(location.search).has('verify')){
+    const report={checks:[],errors:[]};
+    try{
+      await edgekin.start();
+      const stats=edgekin.getMapStats();
+      if(!stats||stats.gapPlatformCount<1)throw new Error('Sparse layout must receive playable supplemental ledges');
+      if(!edgekin.getSessionStats().target)throw new Error('Sparse layout must have a reachable coin');
+      report.checks.push('generated supplemental ledges and reachable coin');
+      edgekin.pause();
+      const shadow=document.querySelector('[data-edgekin-overlay]').shadowRoot;
+      const panel=shadow.querySelector('.edgekin-controls');
+      const buttons=[...panel.querySelectorAll('button')].filter(button=>!button.hidden);
+      if(buttons.length!==3)throw new Error('Paused panel must contain three controls');
+      const rows=buttons.map(button=>button.getBoundingClientRect().top);
+      if(Math.max(...rows)-Math.min(...rows)>.5)throw new Error('Buttons wrap to multiple rows');
+      if(getComputedStyle(panel).flexWrap!=='nowrap')throw new Error('Panel must remain one line');
+      if(panel.textContent.includes('复杂度'))throw new Error('Complexity is hidden from the game panel');
+      report.checks.push('three buttons on one row, no complexity label');
+      report.stats=stats;
+      report.bounds=buttons.map(button=>({label:button.textContent,x:button.getBoundingClientRect().x,y:button.getBoundingClientRect().y}));
+      if(new URLSearchParams(location.search).has('capture')){
+        // Export the already paused frame without requiring a debugging port.
+        const snapshot=document.documentElement.cloneNode(true);
+        snapshot.querySelectorAll('script,[data-edgekin-overlay]').forEach(element=>element.remove());
+        const style=document.createElement('style');style.textContent=shadow.querySelector('style').textContent;
+        const overlay=document.createElement('img');overlay.src=shadow.querySelector('canvas').toDataURL();
+        const canvas=shadow.querySelector('canvas');
+        overlay.style.cssText=`position:fixed;left:0;top:0;pointer-events:none;width:${canvas.clientWidth}px;height:${canvas.clientHeight}px`;
+        const panelCopy=panel.cloneNode(true);
+        snapshot.querySelector('head').append(style);
+        snapshot.querySelector('body').append(overlay,panelCopy);
+        report.captureHtml='<!doctype html>'+snapshot.outerHTML;
+      }
+      if(!new URLSearchParams(location.search).has('capture')){
+        const frozen=shadow.querySelector('canvas').toDataURL();
+        await new Promise(resolve=>setTimeout(resolve,50));
+        if(shadow.querySelector('canvas').toDataURL()!==frozen)throw new Error('Paused drawing must stop');
+        const generationMs=edgekin.getMapStats().generationMs;
+        edgekin.restart();await edgekin.start();
+        if(edgekin.getSessionStats().score!==0||edgekin.getMapStats().generationMs!==generationMs)
+          throw new Error('Restart must clear score without scanning');
+        document.querySelector('textarea').focus({preventScroll:true});
+        if(edgekin.getSessionStats().state!=='paused')throw new Error('Input focus must pause play');
+        document.querySelector('textarea').blur();
+        report.checks.push('pause freezes drawing, restart reuses map, input focus pauses');
+        await edgekin.regenerate();
+        if(edgekin.getSessionStats().state!=='paused')throw new Error('Regeneration must finish paused');
+        report.checks.push('regeneration preserves lifecycle');
+        const pending=edgekin.regenerate();
+        edgekin.destroy();
+        await pending;
+        if(document.querySelector('[data-edgekin-overlay]'))throw new Error('Destroy must remove overlay');
+        report.checks.push('destroy during generation removes overlay');
+      }
+    }catch(error){report.errors.push(error.message)}
+    const output=document.createElement('pre');
+    output.id='edgekin-verification';output.dataset.edgekinIgnore='';output.textContent=JSON.stringify(report);
+    output.hidden=true;
+    document.body.append(output);
+  }
+</script>
+</html>

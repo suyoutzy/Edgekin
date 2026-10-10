@@ -7,10 +7,11 @@ import { openingCount } from './contours.js';
 import type { Level, Player, ScanTiming } from './types.js';
 import { watchPage } from './page-watch.js';
 import { throwIfAborted, yieldToBrowser } from './scheduling.js';
-import { CollectionSession, chooseRewardAsync } from './rewards.js';
+import { CollectionSession, chooseRewardWithDiscoveryAsync } from './rewards.js';
 import { createPatrols, hitsPatrol, patrolPosition } from './hazards.js';
 import { surfaceY } from './geometry.js';
 import type { JumpRecipe, Patrol, RewardTarget } from './types.js';
+import { addGapPlatformsAsync } from './playground.js';
 
 export interface EdgekinOptions {
   root?: HTMLElement;
@@ -49,6 +50,7 @@ export interface MapStats {
   openedContainerCount: number;
   openingCount: number;
   standingSurfaceCount: number;
+  gapPlatformCount: number;
   contourBudget: number;
   eligibleOutlineCount: number;
   omittedOutlineCount: number;
@@ -76,10 +78,10 @@ export interface MapStats {
 type State = 'idle' | 'generating' | 'selecting' | 'playing' | 'paused' | 'complete' | 'unavailable' | 'destroyed';
 
 const STYLE = `
-.edgekin-controls{position:fixed;right:22px;top:22px;z-index:1;display:flex;flex-wrap:wrap;align-items:center;gap:10px;max-width:min(380px,calc(100vw - 44px));padding:10px 12px;border:1px solid #d9d9d5;border-radius:14px;background:rgba(255,255,255,.95);box-shadow:0 8px 28px rgba(0,0,0,.12);font:13px/1.35 system-ui,sans-serif;color:#242424;pointer-events:auto}
-.edgekin-controls button{border:0;border-radius:9px;background:#1b1b1b;color:white;font:600 13px system-ui,sans-serif;padding:8px 12px;cursor:pointer;white-space:nowrap}
+.edgekin-controls{position:fixed;right:22px;top:22px;z-index:1;display:flex;flex-wrap:nowrap;align-items:center;gap:8px;box-sizing:border-box;max-width:min(620px,calc(100vw - 44px));padding:10px 12px;border:1px solid #d9d9d5;border-radius:14px;background:rgba(255,255,255,.95);box-shadow:0 8px 28px rgba(0,0,0,.12);font:13px/1.35 system-ui,sans-serif;color:#242424;pointer-events:auto}
+.edgekin-controls button{flex:none;border:0;border-radius:9px;background:#1b1b1b;color:white;font:600 13px system-ui,sans-serif;padding:8px 12px;cursor:pointer;white-space:nowrap}
 .edgekin-controls button:focus-visible{outline:3px solid #f4a46f;outline-offset:2px}
-.edgekin-controls span{min-width:0}
+.edgekin-controls span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .edgekin-controls button:disabled{opacity:.55;cursor:wait}
 .edgekin-controls button[hidden]{display:none}
 `;
@@ -152,13 +154,14 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
       generating: ['正在根据当前网页生成关卡…', '生成中'],
       selecting: [`积分 ${collection.score} · 寻找下一枚硬币…`, '暂停'],
       playing: [mode === 'collect' ? `积分 ${collection.score} · ←/→ 移动 · ↑ 跳跃/借墙 · ↓ 下蹲` : '←/→ 移动 · ↑ 跳跃/借墙 · ↓ 下蹲', '暂停'],
-      paused: [`已暂停${mode === 'collect' ? ` · 积分 ${collection.score}` : ''} · ${mapStats?.outlineCount ?? 0}/${mapStats?.eligibleOutlineCount ?? 0} 个轮廓 · 复杂度 ${mapStats?.complexityPercent?.toFixed(1) ?? '—'}%`, '继续'],
+      paused: [`已暂停${mode === 'collect' ? ` · 积分 ${collection.score}` : ''}`, '继续'],
       complete: [mode === 'collect' ? `积分 ${collection.score} · 暂无合格目标，长按 ↓ 换一关继续` : '通关！长按 ↓ 约 0.8 秒生成新关卡', '新关卡'],
       unavailable: ['当前可见页面缺少可用边缘，请滚动页面或调整窗口。', '重试'],
     };
     if (state === 'destroyed') return;
     const [description, action] = descriptions[state];
     label.textContent = description;
+    label.title = description;
     button.textContent = action;
     button.disabled = state === 'generating';
     retryButton.hidden = !level || (state !== 'paused' && state !== 'complete');
@@ -233,7 +236,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         const extra = await reachableJumpsAsync(activeLevel.world, [source.groundedOn], signal);
         for (const [id, recipes] of extra) graph.set(id, recipes);
       }
-      const target = await chooseRewardAsync(activeLevel.world, source, graph,
+      const target = await chooseRewardWithDiscoveryAsync(activeLevel.world, source, graph,
         { patrols, time: gameTime, recent: collection.recent }, signal);
       throwIfAborted(signal);
       if (level !== activeLevel) return;
@@ -358,6 +361,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         openedContainerCount: shapes.filter(shape => shape.openings?.length).length,
         openingCount: shapes.reduce((n, shape) => n + openingCount(shape), 0),
         standingSurfaceCount: scanned.platforms.length,
+        gapPlatformCount: 0,
         contourBudget: CONTOUR_BUDGET,
         eligibleOutlineCount: scanned.contourStats?.eligibleCount ?? shapes.length,
         omittedOutlineCount: scanned.contourStats?.omittedCount ?? 0,
@@ -370,17 +374,19 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         scanTiming: scanned.scanTiming ?? null, planningMs: 0, generationMs: 0, retries: 0,
         frameSamples: 0, averageFps: null, frameP95Ms: null, updateAverageMs: null, drawAverageMs: null,
       };
-      const visual = { ...scanned, platforms: scanned.platforms.filter(platform => platform.tier !== 'text') };
       const planningStart = performance.now();
+      const enriched = mode === 'collect' ? await addGapPlatformsAsync(scanned, signal) : scanned;
+      mapStats.gapPlatformCount = enriched.platforms.filter(platform => platform.generated === 'gap').length;
+      const visual = { ...enriched, platforms: enriched.platforms.filter(platform => platform.tier !== 'text') };
       graph = await reachableJumpsAsync(visual, undefined, signal);
       await yieldToBrowser(signal);
-      level = chooseLevel(visual, { recent, graph });
+      level = chooseLevel(visual, { recent, graph, relaxed: mode === 'collect' });
       if (!level && scanned.platforms.some(platform => platform.tier === 'text')) {
-        const textGraph = await reachableJumpsAsync(scanned, undefined, signal);
-        level = chooseLevel(scanned, { recent, graph: textGraph });
+        const textGraph = await reachableJumpsAsync(enriched, undefined, signal);
+        level = chooseLevel(enriched, { recent, graph: textGraph, relaxed: mode === 'collect' });
         graph = textGraph;
       }
-      if (!level) { level = await createFallbackLevelAsync(scanned, { recent }, signal); }
+      if (!level) { level = await createFallbackLevelAsync(enriched, { recent, relaxed: mode === 'collect' }, signal); }
       throwIfAborted(signal);
       if (level) {
         level.metrics ??= await assessRouteAsync(level, graph, signal);
@@ -409,10 +415,10 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
           const goal = level.world.platforms.find(platform => platform.id === level?.goalId)!;
           patrols = options.hazards === false ? [] : createPatrols(level.world,
             [player, { x: level.goalX, footY: surfaceY(goal, level.goalX, level.world) }], level.route);
-          let target = await chooseRewardAsync(level.world, player, graph, { patrols }, signal);
+          let target = await chooseRewardWithDiscoveryAsync(level.world, player, graph, { patrols }, signal);
           if (!target && patrols.length) {
             patrols = [];
-            target = await chooseRewardAsync(level.world, player, graph, {}, signal);
+            target = await chooseRewardWithDiscoveryAsync(level.world, player, graph, {}, signal);
           }
           throwIfAborted(signal);
           if (target) applyTarget(target, player);

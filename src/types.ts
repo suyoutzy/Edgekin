@@ -7,6 +7,7 @@ export interface Platform {
   tier?: 'visual' | 'text';
   shapeId?: number;
   segmentId?: number;
+  generated?: 'gap';
 }
 
 export interface Shape {
@@ -21,6 +22,7 @@ export interface Shape {
   openings?: { from: number; to: number }[];
   detail?: 'icon';
   control?: boolean;
+  media?: boolean;
 }
 
 export interface BoundarySegment {

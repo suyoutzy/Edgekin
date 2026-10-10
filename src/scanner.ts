@@ -73,7 +73,8 @@ function* scanSteps(root: HTMLElement, width: number, height: number): Generator
           radius >= Math.min(rect.width, rect.height) * .47);
       shapes.push({ id: shapes.length, left: rect.left, right: rect.right,
         top: rect.top, bottom: rect.bottom, radius, kind: ellipse ? 'ellipse' : 'rect',
-        ...(icon ? { detail: 'icon' as const } : {}), ...(control ? { control: true } : {}) });
+        ...(icon ? { detail: 'icon' as const } : {}), ...(control ? { control: true } : {}),
+        ...(MEDIA_TAGS.has(tag) || style.backgroundImage !== 'none' ? { media: true } : {}) });
     } else if (TEXT_TAGS.has(tag) && element.textContent?.trim()) {
       const range = document.createRange();
       range.selectNodeContents(element);
@@ -93,7 +94,7 @@ function* scanSteps(root: HTMLElement, width: number, height: number): Generator
   const normalizeMs = performance.now() - normalizeStart;
   yield;
   const openingsStart = performance.now();
-  const candidates = openContainers(cleaned, size, width, height);
+  const candidates = openContainers(cleaned, size, width, height, Math.random, true);
   const openingsMs = performance.now() - openingsStart;
   yield;
   const surfacesStart = performance.now();

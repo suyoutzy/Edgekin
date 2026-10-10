@@ -56,6 +56,7 @@ export function surfaceY(platform: Platform, x: number, world: World): number {
 export function normalizeShapes(input: Shape[], size: number, clearanceHeight = size): Shape[] {
   const area = (shape: Shape): number => (shape.right - shape.left) * (shape.bottom - shape.top);
   const bodyWidth = playerWidth({ characterHeight: size });
+  const duplicateInset = Math.max(4, Math.min(size * .4, clearanceHeight * .65));
   const contains = (outer: Shape, inner: Shape): boolean => outer !== inner &&
     outer.left <= inner.left + .5 && outer.right >= inner.right - .5 &&
     outer.top <= inner.top + .5 && outer.bottom >= inner.bottom - .5 && area(outer) > area(inner);
@@ -80,16 +81,28 @@ export function normalizeShapes(input: Shape[], size: number, clearanceHeight = 
   const unique: Shape[] = [];
   // Keep the encompassing outline for almost coincident DOM/SVG bounds.
   for (const original of [...input].sort((a, b) => area(b) - area(a) || spatialOrder(a, b))) {
-    const duplicate = unique.find(other => Math.abs(other.left - original.left) < 4 &&
-      Math.abs(other.right - original.right) < 4 && Math.abs(other.top - original.top) < 4 &&
-      Math.abs(other.bottom - original.bottom) < 4);
+    const duplicate = unique.find(other => Math.abs(other.left - original.left) < duplicateInset &&
+      Math.abs(other.right - original.right) < duplicateInset && Math.abs(other.top - original.top) < duplicateInset &&
+      Math.abs(other.bottom - original.bottom) < duplicateInset);
     if (duplicate) {
       if (original.control) duplicate.control = true;
+      if (original.media) duplicate.media = true;
       continue;
     }
     unique.push({ ...original });
   }
-  const candidates = unique.filter(inner => !unique.some(outer => suppresses(outer, inner)));
+  const candidates = unique.filter(inner => !unique.some(outer => {
+    if (suppresses(outer, inner)) return true;
+    if (outer === inner || area(outer) <= area(inner)) return false;
+    const overlapX = Math.max(0, Math.min(outer.right, inner.right) - Math.max(outer.left, inner.left));
+    const overlapY = Math.max(0, Math.min(outer.bottom, inner.bottom) - Math.max(outer.top, inner.top));
+    if (overlapX * overlapY < area(inner) * .35 || contains(outer, inner)) return false;
+    // A frame straddling a much larger card creates crossing walls rather than a room.
+    // Keep separate overlapping cards, but omit mostly enclosed decorations.
+    return area(outer) >= area(inner) * 3 ||
+      (Math.abs(outer.left - inner.left) < bodyWidth && Math.abs(outer.right - inner.right) < bodyWidth &&
+        Math.abs(outer.top - inner.top) < clearanceHeight && Math.abs(outer.bottom - inner.bottom) < clearanceHeight);
+  }));
   const parent = candidates.map((_, index) => index);
   const find = (index: number): number => {
     while (parent[index] !== index) { parent[index] = parent[parent[index]!]!; index = parent[index]!; }
@@ -130,6 +143,7 @@ export function normalizeShapes(input: Shape[], size: number, clearanceHeight = 
     shape.bottom = Math.max(...group.map(item => item.bottom));
     shape.radius = Math.min(...group.map(item => item.radius));
     if (group.some(item => item.control)) shape.control = true;
+    if (group.some(item => item.media)) shape.media = true;
     if (shape.control || group.some(item => item.detail !== 'icon')) delete shape.detail;
     delete shape.hollow; delete shape.openings;
     return shape;

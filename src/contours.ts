@@ -88,8 +88,10 @@ function clipSegment(edge: BoundarySegment, box: Box): [number, number] | null {
 
 /** Open nested containers, checking the full standing body on both sides of a gap. */
 export function openContainers(shapes: Shape[], size: number, width: number, height: number,
-  random: () => number = Math.random): Shape[] {
-  const eligible = new Set(shapes.filter(shape => shapes.some(inner => containsShape(shape, inner)) &&
+  random: () => number = Math.random, openEmpty = false): Shape[] {
+  const eligible = new Set(shapes.filter(shape => (shapes.some(inner => containsShape(shape, inner)) ||
+    (openEmpty && !shape.control && !shape.media && shape.kind === 'rect' &&
+      shape.right - shape.left >= size * 12 && shape.bottom - shape.top >= size * 6)) &&
     Math.min(shape.right - shape.left, shape.bottom - shape.top) >= size * 1.4).map(shape => shape.id));
   const resolved = new Map<number, Shape>();
   const removed = new Set<number>();
@@ -111,14 +113,15 @@ export function openContainers(shapes: Shape[], size: number, width: number, hei
         return true;
       });
     let offset = 0;
-    const possible: { from: number; to: number; edge: number }[] = [];
+    const emptyRoom = openEmpty && !shapes.some(inner => containsShape(shape, inner));
+    const possible: { from: number; to: number; edge: number; side: number; y: number }[] = [];
     for (const edge of segments) {
       const length = Math.hypot(edge.x2 - edge.x1, edge.y2 - edge.y1);
       const start = offset; offset += length;
       const vertical = Math.abs(edge.x2 - edge.x1) < .001;
       const horizontal = Math.abs(edge.y2 - edge.y1) < .001;
       if (!vertical && !horizontal) continue;
-      const gap = size * (vertical ? 1.65 : 1.25);
+      const gap = size * (vertical ? (emptyRoom ? 2.5 : 1.65) : 1.25);
       if (length < gap + 12) continue;
       for (let attempt = 0; attempt < 12; attempt++) {
         const distance = 6 + (attempt === 0 ? random() : (attempt - 1) / 10) * (length - gap - 12);
@@ -129,13 +132,21 @@ export function openContainers(shapes: Shape[], size: number, width: number, hei
           { left: cx - bodyWidth / 2 - 2, right: cx + bodyWidth / 2 + 2,
             top: cy - size - 2, bottom: cy + size + 2 };
         if (clear(box)) possible.push({ from: (start + distance) / perimeter,
-          to: (start + distance + gap) / perimeter, edge: edge.id });
+          to: (start + distance + gap) / perimeter, edge: edge.id,
+          side: vertical ? (cx < (shape.left + shape.right) / 2 ? -1 : 1) : 0, y: cy });
       }
     }
-    const count = random() < .5 ? 1 : 2;
+    const count = emptyRoom ? 2 : random() < .5 ? 1 : 2;
     for (let i = 0; i < count; i++) {
       if (!possible.length) break;
-      const index = Math.min(possible.length - 1, Math.floor(random() * possible.length));
+      // Empty rooms need useful entrances from both vacant sides, near a floor.
+      // Nested content shells retain their freely randomized openings.
+      const sides = emptyRoom ? possible.map((gap, index) => ({ gap, index }))
+        .filter(({ gap }) => gap.side === (i === 0 ? -1 : 1))
+        .sort((a, b) => Math.abs(a.gap.y - (shape.bottom - size * 1.5)) -
+          Math.abs(b.gap.y - (shape.bottom - size * 1.5))) : [];
+      const index = sides.length ? sides[0]!.index :
+        Math.min(possible.length - 1, Math.floor(random() * possible.length));
       const selected = possible[index]!;
       base.openings.push({ from: selected.from, to: selected.to });
       for (let j = possible.length - 1; j >= 0; j--) {

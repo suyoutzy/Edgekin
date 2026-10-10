@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CollectionSession, chooseReward, chooseRewardAsync, rewardDistance } from '../dist/rewards.js';
+import { CollectionSession, chooseReward, chooseRewardAsync, chooseRewardWithDiscoveryAsync, rewardDistance } from '../dist/rewards.js';
 import { reachableJumps, recipeControl } from '../dist/planner.js';
 import { spawnPlayer, stepPlayer, STEP_SECONDS } from '../dist/physics.js';
 import { createPatrols, hitsPatrol, safeFromPatrols } from '../dist/hazards.js';
@@ -93,7 +93,10 @@ test('target selection prefers a reachable jump route over walking along the sou
 test('a wall across one broad surface cannot be bypassed by the target selector', () => {
   const world = { ...floorWorld(), walls: [{ x: 330, top: 0, bottom: 550 }] };
   const from = spawnPlayer(world.platforms[0], world, 200);
-  assert.equal(chooseReward(world, from, new Map([[0, []]]), { random: random() }), null);
+  const target = chooseReward(world, from, new Map([[0, []]]), { random: random() });
+  assert.ok(target, 'a shorter target on this side is preferable to ending the run');
+  assert.ok(target.x < 330);
+  replay(world, from, target);
 });
 
 test('continuous target validation retains low-beam crouching from the actual arrival position', () => {
@@ -134,7 +137,10 @@ test('a fake cached jump through a wall is rejected by full-world replay', () =>
   const from = spawnPlayer(world.platforms[0], world, 180);
   const graph = new Map([[0, [{ takeoffX: 245, horizontal: 1, moveFrames: 60,
     landedOn: 1, landingX: 480, kind: 'jump' }]]]);
-  assert.equal(chooseReward(world, from, graph, { random: random() }), null);
+  const target = chooseReward(world, from, graph, { random: random() });
+  assert.ok(target, 'nearby fallback can still use the current floor');
+  assert.equal(target.platformId, 0, 'the fake edge must never reach the far side');
+  replay(world, from, target);
 });
 
 test('a tiny exhausted area does not produce a nearby or unreachable substitute coin', () => {
@@ -168,11 +174,60 @@ test('patrol placement reserves broad flat jump space and avoids protected point
   const world = floorWorld(), points = [{ x: 100, footY: 550 }, { x: 1250, footY: 550 }];
   const patrols = createPatrols(world, points, [0], random());
   assert.equal(patrols.length, 1);
+  assert.ok(patrols[0].right - patrols[0].left >= 650, 'a long floor gets a wide patrol range');
+  assert.ok(Math.PI * (patrols[0].right - patrols[0].left) / patrols[0].period > 200,
+    'peak speed is higher than the old two-height patrol');
   assert.ok(points.every(point => safeFromPatrols(world, patrols, point.x, point.footY)));
   const narrow = { ...world, platforms: [{ id: 0, left: 100, right: 450, top: 550 }] };
   assert.deepEqual(createPatrols(narrow, []), []);
   const low = { ...world, platforms: [...world.platforms, { id: 1, left: 50, right: 1350, top: 530 }] };
   assert.ok(!createPatrols(low, [], [0]).some(patrol => patrol.platformId === 0));
+});
+
+test('wide fast patrols permit verified targets at multiple starting phases', () => {
+  const world = floorWorld(), from = spawnPlayer(world.platforms[0], world, 100);
+  const base = createPatrols(world, [from, { x: 1250, footY: 550 }], [0], random())[0];
+  for (let phase = 0; phase < 1; phase += .125) {
+    const patrols = [{ ...base, phase }];
+    const target = chooseReward(world, from, new Map([[0, []]]), { patrols, random: random() });
+    assert.ok(target, `wide fast patrol should allow continued play at phase ${phase}`);
+    replay(world, from, target, patrols);
+  }
+});
+
+test('coins can use a patrol range when the actual arrival is safe', () => {
+  const world = floorWorld(), from = spawnPlayer(world.platforms[0], world, 100);
+  const patrols = [{ id: 0, platformId: 0, left: 300, right: 1340, footY: 550,
+    radius: 7.5, period: 12, phase: .5 }];
+  const target = chooseReward(world, from, new Map([[0, []]]), { patrols, random: random() });
+  assert.ok(target);
+  assert.ok(target.x >= 300 && target.x <= 1340, 'a swept area is no longer completely excluded');
+  replay(world, from, target, patrols);
+});
+
+test('shorter and crouched targets keep small traversable regions playable', () => {
+  const world = { ...floorWorld(), platforms: [{ id: 0, left: 100, right: 260, top: 550 },
+    { id: 1, left: 80, right: 280, top: 528 }] };
+  const from = spawnPlayer(world.platforms[0], world, 115, true);
+  const target = chooseReward(world, from, new Map([[0, []]]), { random: random() });
+  assert.ok(target);
+  assert.ok(Math.abs(target.x - from.x) >= world.characterHeight * 2);
+  assert.ok(Math.abs(target.x - from.x) < rewardDistance(world));
+  const { player } = replay(world, from, target);
+  assert.equal(player.crouching, true);
+});
+
+test('omitted reachable graph sources are sampled before declaring no target', async () => {
+  const world = { width: 1000, height: 650, characterHeight: 24,
+    platforms: [{ id: 0, left: 100, right: 150, top: 520 },
+      { id: 1, left: 175, right: 235, top: 480 },
+      { id: 2, left: 290, right: 820, top: 430 }] };
+  const from = spawnPlayer(world.platforms[0], world, 125);
+  const graph = new Map();
+  const target = await chooseRewardWithDiscoveryAsync(world, from, graph, { random: random() });
+  assert.ok(target);
+  assert.ok(graph.has(0));
+  replay(world, from, target);
 });
 
 test('a patrol at the landing point permits a target only after a safe waiting window', () => {

@@ -1,5 +1,5 @@
 import { bodyHeight, playerWidth } from './dimensions.js';
-import { canOccupy } from './physics.js';
+import { canOccupy, movementSpeed } from './physics.js';
 import { surfaceY } from './geometry.js';
 import { randomUnit } from './planner.js';
 import type { Patrol, Player, World } from './types.js';
@@ -60,7 +60,7 @@ export function safeFromPatrols(world: World, patrols: readonly Patrol[],
     x < patrol.left - world.characterHeight * 1.5 || x > patrol.right + world.characterHeight * 1.5);
 }
 
-/** Only broad, flat surfaces with clear jump space get a small patrol. */
+/** Patrol spans scale with the actual clear part of a long surface. */
 export function createPatrols(world: World, protectedPoints: readonly { x: number; footY: number }[],
   preferredIds: readonly number[] = [], random = randomUnit): Patrol[] {
   const size = world.characterHeight;
@@ -70,25 +70,32 @@ export function createPatrols(world: World, protectedPoints: readonly { x: numbe
       (b.right - b.left) - (a.right - a.left));
   const patrols: Patrol[] = [];
   for (const platform of platforms) {
-    for (const fraction of [.5, .3, .7]) {
-      const center = platform.left + (platform.right - platform.left) * fraction;
-      const left = center - size, right = center + size;
-      const footY = surfaceY(platform, center, world);
-      const patrol: Patrol = { id: patrols.length, platformId: platform.id, left, right, footY,
-        radius: size * .25, period: 3.2 + random() * .8, phase: random() };
-      if (protectedPoints.some(point => !safeFromPatrols(world, [patrol], point.x, point.footY))) continue;
-      if (patrols.some(old => Math.hypot(center - (old.left + old.right) / 2, footY - old.footY) < size * 8)) continue;
-      if (center > world.width - 420 && footY < 180) continue;
-      let clear = true;
-      // Reserve landing/waiting space and the whole jump envelope, not just the circle.
-      for (let x = left - size * 3; x <= right + size * 3 && clear; x += size * .5) {
-        if (x < platform.left + size || x > platform.right - size ||
-          Math.abs(surfaceY(platform, x, world) - footY) > .5) { clear = false; break; }
-        for (let lift = 0; lift <= size * 4; lift += size * .5) {
-          if (!canOccupy(world, x, footY - lift, false, lift === 0 ? platform.id : null)) { clear = false; break; }
-        }
+    const runs: { left: number; right: number; footY: number }[] = [];
+    let run: typeof runs[number] | null = null;
+    const step = size * .5;
+    for (let x = platform.left + size * 2; x <= platform.right - size * 2; x += step) {
+      const footY = surfaceY(platform, x, world);
+      let clear = !(x > world.width - 520 && footY < 180) &&
+        !protectedPoints.some(point => Math.abs(point.footY - footY) < size * 1.5 && Math.abs(point.x - x) < size * 2.5);
+      for (let lift = 0; lift <= size * 4 && clear; lift += size * .5) {
+        clear = canOccupy(world, x, footY - lift, false, lift === 0 ? platform.id : null);
       }
-      if (!clear) continue;
+      if (!clear || (run && Math.abs(run.footY - footY) > .5)) { run = null; continue; }
+      if (!run) { run = { left: x, right: x, footY }; runs.push(run); }
+      else run.right = x;
+    }
+    runs.sort((a, b) => b.right - b.left - (a.right - a.left));
+    for (const clear of runs) {
+      const width = clear.right - clear.left - size * 2;
+      const span = Math.min((platform.right - platform.left) * .65, width);
+      if (span < size * 4) continue;
+      const center = (clear.left + clear.right) / 2;
+      const left = center - span / 2, right = center + span / 2, footY = clear.footY;
+      if (patrols.some(old => Math.abs(footY - old.footY) < size * 1.5 &&
+        right + size * 3 > old.left && left - size * 3 < old.right)) continue;
+      const peakSpeed = movementSpeed(world) * (.95 + random() * .2);
+      const patrol: Patrol = { id: patrols.length, platformId: platform.id, left, right, footY,
+        radius: size * .25, period: Math.max(2.4, span * Math.PI / peakSpeed), phase: random() };
       patrols.push(patrol);
       break;
     }

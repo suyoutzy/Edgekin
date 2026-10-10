@@ -100,11 +100,11 @@ export class Renderer {
 
     for (const platform of world.platforms) {
       if (platform.shapeId !== undefined) continue;
-      context.strokeStyle = platform.kind === 'helper' ? '#e85a24' : '#1376b5';
+      context.strokeStyle = platform.generated === 'gap' ? '#8554bf' : platform.kind === 'helper' ? '#e85a24' : '#1376b5';
       context.lineWidth = platform.kind === 'helper' ? 3 : 3.5;
       context.shadowColor = 'rgba(255,255,255,.9)';
       context.shadowBlur = 4;
-      context.setLineDash(platform.kind === 'helper' ? [7, 5] : []);
+      context.setLineDash(platform.kind === 'helper' && !platform.generated ? [7, 5] : []);
       context.beginPath();
       context.moveTo(platform.left, platform.top - 1);
       context.lineTo(platform.right, platform.top - 1);

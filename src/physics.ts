@@ -6,7 +6,7 @@ export { bodyHeight, characterHeight, CROUCH_RATIO, playerWidth } from './dimens
 
 export const STEP_SECONDS = 1 / 60;
 export const JUMP_BUFFER_SECONDS = .1;
-export const COYOTE_SECONDS = .1;
+export const COYOTE_SECONDS = .02;
 export const WALL_KICK_SECONDS = .12;
 const platformCaches = new WeakMap<World, { count: number; source: Platform[];
   byId: Map<number, Platform>; lines: Platform[] }>();

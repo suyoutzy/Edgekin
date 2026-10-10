@@ -74,6 +74,7 @@ const game = mountEdgekin({ mode: 'course', onComplete() { console.log('Complete
 `getMapStats()` 的类型定义见 [`src/index.ts`](../src/index.ts)。包括：
 
 - 轮廓：`outlineCount`、`eligibleOutlineCount`、`omittedOutlineCount`、`complexityPercent`、图标与开口数量。
+- 补充地形：`gapPlatformCount`；紫色空白区平台不计入网页轮廓覆盖率。
 - 路线：跳跃、墙跳、蹲行次数，平台和分支数量，起终点距离、最小落点余量、扰动成功比例及估计执行时间。
 - 生成：扫描各阶段、规划和总耗时，以及重试次数。
 - 运行：最近 120 个动画帧的样本数量、平均 FPS、帧间隔 P95、平均物理更新与绘制耗时。

@@ -11,6 +11,7 @@ export interface SelectionOptions {
   jumpSources?: readonly number[];
   requiredPlatform?: number;
   graph?: Map<number, JumpRecipe[]>;
+  relaxed?: boolean;
 }
 export function randomUnit(): number {
   if (typeof crypto !== 'undefined') return crypto.getRandomValues(new Uint32Array(1))[0]! / 4294967296;
@@ -84,7 +85,8 @@ function* buildJumpGraph(world: World, sourceIds?: readonly number[]): Generator
   const small = eligible.filter(platform => platform.right - platform.left < world.characterHeight * 1.5);
   const spread = (items: Platform[], count: number): Platform[] => items.length <= count ? items :
     Array.from({ length: count }, (_, i) => items[Math.floor(i * items.length / count)]!);
-  const chosen = selected ? eligible.slice(0, 48) : [...wide.slice(0, 32), ...spread(small, 16)];
+  const chosen = selected ? eligible.slice(0, 48) :
+    [...wide.filter(platform => platform.generated === 'gap'), ...wide.slice(0, 32), ...spread(small, 16)];
   const sources = [...new Set([...chosen, ...eligible])].slice(0, 48);
   const budget = { remaining: 600000 };
   for (const source of sources) {
@@ -279,7 +281,8 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
   eligible.sort((a, b) => b.score - a.score);
   const random = settings.random ?? randomUnit;
   const recent = settings.recent ?? [];
-  const minDistance = Math.max(world.characterHeight * 7, Math.min(260, world.width * .2));
+  const minDistance = settings.relaxed ? world.characterHeight * 2 :
+    Math.max(world.characterHeight * 7, Math.min(260, world.width * .2));
   let best: Level | null = null;
   let bestNovelty = -Infinity;
   // Validate the fixed walks between consecutive jump recipes once. A longer
