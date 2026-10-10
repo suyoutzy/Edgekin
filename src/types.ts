@@ -8,6 +8,7 @@ export interface Platform {
   shapeId?: number;
   segmentId?: number;
   generated?: 'gap';
+  blink?: { period: number; visibleSeconds: number; phase: number };
 }
 
 export interface Shape {
@@ -17,7 +18,8 @@ export interface Shape {
   top: number;
   bottom: number;
   radius: number;
-  kind: 'rect' | 'ellipse';
+  kind: 'rect' | 'ellipse' | 'polygon';
+  points?: [number, number][];
   hollow?: boolean;
   openings?: { from: number; to: number }[];
   detail?: 'icon';
@@ -73,13 +75,14 @@ export interface Player {
   wallSide?: -1 | 0 | 1;
   wallJumpTime?: number;
   wallJumpDirection?: -1 | 0 | 1;
-  event?: 'jump' | 'wall-jump' | 'land' | 'ceiling';
+  event?: 'jump' | 'wall-jump' | 'land' | 'ceiling' | 'fast-fall';
 }
 
 export interface Controls {
   horizontal: -1 | 0 | 1;
   jump: boolean;
   crouch?: boolean;
+  fastFall?: boolean;
 }
 
 export interface JumpRecipe {

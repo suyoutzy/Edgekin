@@ -56,7 +56,7 @@ function vacant(world: World, ledge: Platform): boolean {
 function* supplement(source: World): Generator<void, World> {
   if (source.width < 640 || source.height < 480 || !source.platforms.length) return source;
   const size = source.characterHeight, ledgeWidth = size * 3.8;
-  const limit = Math.min(12, Math.max(4, Math.floor(source.width * source.height / 100000)));
+  const limit = Math.min(5, Math.max(3, Math.floor(source.width * source.height / 450000)));
   const anchors = source.platforms.filter(platform => platform.right - platform.left >= size * 2 &&
     platform.top >= size * 2 && platform.top <= source.height - size)
     .sort((a, b) => b.top - a.top || b.right - b.left - (a.right - a.left));
@@ -64,10 +64,13 @@ function* supplement(source: World): Generator<void, World> {
   let nextId = Math.max(-1, ...source.platforms.map(platform => platform.id)) + 1;
   for (let cursor = 0; cursor < anchors.length && count < limit && attempts < 240; cursor++) {
     const anchor = anchors[cursor]!;
-    const added: Platform[] = [];
-    const positions = [anchor.left - size - ledgeWidth, anchor.right + size];
+    const positions: number[] = [];
     if (anchor.right - anchor.left >= size * 9) {
-      for (const fraction of [.25, .5, .75]) positions.push(anchor.left + (anchor.right - anchor.left) * fraction - ledgeWidth / 2);
+      positions.push((anchor.left + anchor.right - ledgeWidth) / 2);
+    }
+    positions.push(anchor.left - size - ledgeWidth, anchor.right + size);
+    if (anchor.right - anchor.left >= size * 9) {
+      for (const fraction of [.25, .75]) positions.push(anchor.left + (anchor.right - anchor.left) * fraction - ledgeWidth / 2);
     }
     for (const left of positions) {
       for (const lift of [2.1, 1.4, -1.4]) {
@@ -75,20 +78,25 @@ function* supplement(source: World): Generator<void, World> {
         const ledge: Platform = { id: nextId, left, right: left + ledgeWidth,
           top: surfaceY(anchor, Math.max(anchor.left, Math.min(anchor.right, left + ledgeWidth / 2)), world) - size * lift,
           kind: 'helper', tier: 'visual', generated: 'gap' };
-        if (!vacant(world, ledge)) continue;
+        if (!vacant(world, ledge) || world.platforms.some(platform => platform.generated === 'gap' &&
+          Math.hypot((platform.left + platform.right - ledge.left - ledge.right) / 2,
+            platform.top - ledge.top) < size * 5)) continue;
         const candidate = { ...world, platforms: [...world.platforms, ledge] };
         // Every addition connects both ways; isolated decoration is discarded.
         if (connects(candidate, anchor, ledge) && connects(candidate, ledge, anchor)) {
           world = candidate;
-          added.push(ledge);
           count++; nextId++;
         }
         yield;
       }
     }
-    anchors.splice(cursor + 1, 0, ...added);
+    // Webpage surfaces anchor the extra ledges; avoid chains of artificial stairs.
   }
-  return world;
+  // One optional timing challenge; coins/checkpoints stay on permanent terrain.
+  const helpers = world.platforms.filter(platform => platform.generated === 'gap');
+  const timed = helpers.length >= 2 ? helpers[helpers.length - 1] : undefined;
+  return timed ? { ...world, platforms: world.platforms.map(platform => platform.id === timed.id ?
+    { ...platform, blink: { period: 7, visibleSeconds: 5, phase: 0 } } : platform) } : world;
 }
 
 export function addGapPlatforms(source: World): World {

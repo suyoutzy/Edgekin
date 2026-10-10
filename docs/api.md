@@ -27,6 +27,7 @@ await game.start();
 | `mode` | `'collect' \| 'course'`，可选 | 默认连续收集；`course` 使用原起终点通关玩法 |
 | `hazards` | `boolean`，可选 | 收集模式默认允许巡逻障碍；`false` 可对比无障碍体验；通关模式不添加巡逻障碍 |
 | `onCollect` | `(score: number) => void`，可选 | 每枚硬币成功收集后调用，传入累计分数 |
+| `onScoreChange` | `(score: number, reason: 'collect' \| 'respawn' \| 'reset') => void`，可选 | 分数改变时通知；包含拾取、重生扣分与主动清零。0 分重生及保持分数的地图重建不触发 |
 | `onComplete` | `() => void`，可选 | 仅通关模式完成关卡时调用 |
 
 画布和控件挂载在 `document.body` 下的独立 Shadow DOM 中。画布不拦截鼠标，游戏运行期间使用方向键；宿主输入框获得焦点时暂停。
@@ -57,7 +58,7 @@ game.restart();
 await game.start();
 ```
 
-`restart()` 在收集模式下会清零。若只想继续暂停的游戏，直接调用 `start()`。自然掉落或触碰障碍会自动返回最近收集位置，保留分数；该行为不调用 `restart()`。
+`restart()` 在收集模式下会清零。若只想继续暂停的游戏，直接调用 `start()`。自然掉落或触碰障碍会自动返回最近收集位置，扣 1 分（最低 0）；该行为不调用 `restart()`。
 
 如需原版接入行为：
 
@@ -85,7 +86,7 @@ const game = mountEdgekin({ mode: 'course', onComplete() { console.log('Complete
 
 `getSessionStats()` 返回新的数据对象，不会推进游戏、触发扫描或修改内部状态。`elapsedSeconds` 只在实际运行物理时增加，暂停及选择目标时冻结；`targetSelectionMs` 是最近一次收集后的目标选择耗时，未发生时为 0。选目标期间状态为 `selecting`，动作暂时停住，输入焦点、暂停和销毁仍生效。
 
-分数只在当前挂载实例内累计，不写入浏览器存储。宿主可通过 `onCollect` 自行保存成绩。
+分数只在当前挂载实例内累计，不写入浏览器存储。宿主可通过 `onScoreChange` 自行保存成绩；`onCollect` 仅通知拾取，不通知重生扣分。
 
 ## 排除特定页面元素
 

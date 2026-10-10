@@ -19,6 +19,7 @@ export interface EdgekinOptions {
   mode?: 'collect' | 'course';
   hazards?: boolean;
   onCollect?: (score: number) => void;
+  onScoreChange?: (score: number, reason: 'collect' | 'respawn' | 'reset') => void;
 }
 
 export interface EdgekinInstance {
@@ -84,6 +85,13 @@ const STYLE = `
 .edgekin-controls span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .edgekin-controls button:disabled{opacity:.55;cursor:wait}
 .edgekin-controls button[hidden]{display:none}
+.edgekin-score{flex:none;width:96px;display:grid;gap:4px}
+.edgekin-score[hidden]{display:none}
+.edgekin-score span{font-weight:750;color:#835900}
+.edgekin-score progress{width:96px;height:7px;appearance:none;border:0;border-radius:9px;background:#e9e5dc;overflow:hidden}
+.edgekin-score progress::-webkit-progress-bar{background:#e9e5dc;border-radius:9px}
+.edgekin-score progress::-webkit-progress-value{background:linear-gradient(90deg,#e9a716,#ffd454);border-radius:9px}
+.edgekin-score progress::-moz-progress-bar{background:#e9a716;border-radius:9px}
 `;
 
 export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
@@ -105,10 +113,18 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
   });
   const controls = document.createElement('div');
   controls.className = 'edgekin-controls';
-  controls.title = mode === 'collect' ? '金色硬币每枚 +1；触碰红球或掉落会回到绿色返回点，保留分数。' :
+  controls.title = mode === 'collect' ? '硬币 +1；碰红球或掉落 −1（最低 0），回到绿色返回点。空中 ↓ 快速下落；琥珀平台 5 秒后消失，2 秒后重现，变红时请离开。' :
     '用方向键抵达终点；掉落回原起点，通关后可以重开。';
   const label = document.createElement('span');
   label.setAttribute('role', 'status');
+  const scoreBox = document.createElement('div');
+  scoreBox.className = 'edgekin-score';
+  scoreBox.hidden = mode !== 'collect';
+  const scoreLabel = document.createElement('span');
+  scoreLabel.setAttribute('aria-live', 'polite');
+  const scoreProgress = document.createElement('progress');
+  scoreProgress.max = 10;
+  scoreBox.append(scoreLabel, scoreProgress);
   const button = document.createElement('button');
   button.type = 'button';
   const retryButton = document.createElement('button');
@@ -117,7 +133,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
   const newButton = document.createElement('button');
   newButton.type = 'button';
   newButton.textContent = '换一关';
-  controls.append(label, button, retryButton, newButton);
+  controls.append(scoreBox, label, button, retryButton, newButton);
   shadow.append(style, canvas, controls);
   document.body.append(host);
 
@@ -148,20 +164,30 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
   let targetGeneration = new AbortController();
   const frameSamples: { interval: number; update: number; draw: number }[] = [];
 
+  function notifyScore(reason: 'collect' | 'respawn' | 'reset'): void {
+    try { options.onScoreChange?.(collection.score, reason); }
+    catch (error) { console.error('Edgekin onScoreChange callback failed', error); }
+  }
+
   function updateControls(): void {
     const descriptions: Record<Exclude<State, 'destroyed'>, [string, string]> = {
       idle: [mode === 'collect' ? '收集金色硬币，避开红球。' : '网页边缘，随手一跳。', '开始'],
       generating: ['正在根据当前网页生成关卡…', '生成中'],
-      selecting: [`积分 ${collection.score} · 寻找下一枚硬币…`, '暂停'],
-      playing: [mode === 'collect' ? `积分 ${collection.score} · ←/→ 移动 · ↑ 跳跃/借墙 · ↓ 下蹲` : '←/→ 移动 · ↑ 跳跃/借墙 · ↓ 下蹲', '暂停'],
-      paused: [`已暂停${mode === 'collect' ? ` · 积分 ${collection.score}` : ''}`, '继续'],
-      complete: [mode === 'collect' ? `积分 ${collection.score} · 暂无合格目标，长按 ↓ 换一关继续` : '通关！长按 ↓ 约 0.8 秒生成新关卡', '新关卡'],
+      selecting: ['寻找下一枚硬币…', '暂停'],
+      playing: ['←/→ 移动 · ↑ 跳跃/借墙 · ↓ 蹲/速降', '暂停'],
+      paused: ['已暂停', '继续'],
+      complete: [mode === 'collect' ? '暂无合格目标，长按 ↓ 换一关继续' : '通关！长按 ↓ 约 0.8 秒生成新关卡', '新关卡'],
       unavailable: ['当前可见页面缺少可用边缘，请滚动页面或调整窗口。', '重试'],
     };
     if (state === 'destroyed') return;
     const [description, action] = descriptions[state];
     label.textContent = description;
     label.title = description;
+    scoreLabel.textContent = `积分 ${collection.score}`;
+    const base = Math.floor(Math.max(0, collection.score - 1) / 10) * 10;
+    scoreProgress.value = collection.score - base;
+    scoreProgress.setAttribute('aria-label', `积分 ${collection.score}，本段 ${base} 至 ${base + 10} 分`);
+    scoreBox.title = `每 10 分一个里程碑，当前 ${collection.score} 分，本段目标 ${base + 10} 分`;
     button.textContent = action;
     button.disabled = state === 'generating';
     retryButton.hidden = !level || (state !== 'paused' && state !== 'complete');
@@ -175,7 +201,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         patrols, seconds: gameTime, invulnerable: invulnerable > 0 });
   }
 
-  function respawn(): void {
+  function respawn(penalize = false): void {
     if (!level) return;
     const start = level.world.platforms.find(platform => platform.id === level?.startId);
     if (mode === 'collect') player = collection.respawn();
@@ -184,17 +210,26 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     jumpQueued = false;
     if (mapStats) mapStats.retries++;
     renderer.clearFeedback();
+    const scoreChanged = mode === 'collect' && penalize && collection.penalize() > 0;
+    if (scoreChanged) {
+      if (player) renderer.feedback('penalty', player.x, player.footY);
+    }
     if (player) renderer.feedback('respawn', player.x, player.footY);
+    updateControls();
     draw();
+    if (scoreChanged) notifyScore('respawn');
   }
 
   function restart(): void {
     if (!level || state === 'destroyed' || state === 'generating') return;
     pause();
+    let scoreChanged = false;
     if (mode === 'collect') {
       const start = level.world.platforms.find(platform => platform.id === level?.startId);
       if (!start) return;
+      const previousScore = collection.score;
       collection.score = 0;
+      scoreChanged = previousScore > 0;
       collection.begin(level.world, start, level.startX);
       gameTime = 0;
     }
@@ -202,6 +237,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     state = 'paused';
     if (mode === 'collect') void refreshTarget(false);
     updateControls();
+    if (scoreChanged) notifyScore('reset');
   }
 
   function applyTarget(target: RewardTarget, from: Player): void {
@@ -268,8 +304,9 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
       player = stepPlayer(player, {
         horizontal: horizontal as -1 | 0 | 1,
         jump: jumpQueued,
-        crouch: pressed.has('ArrowDown'),
-      }, level.world);
+        crouch: pressed.has('ArrowDown') && player.groundedOn !== null,
+        fastFall: pressed.has('ArrowDown') && player.groundedOn === null,
+      }, level.world, STEP_SECONDS, gameTime);
       const nextTime = gameTime + STEP_SECONDS;
       const hit = invulnerable <= 0 && hitsPatrol(previous, player, level.world, patrols, gameTime, nextTime);
       gameTime = nextTime;
@@ -279,15 +316,16 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
       accumulator -= STEP_SECONDS;
       if (hit || player.footY > level.world.height + level.world.characterHeight) {
         const hitPosition = player;
-        respawn();
+        respawn(true);
         if (hit) renderer.feedback('hit', hitPosition.x, hitPosition.footY);
         continue;
       }
-      if (mode === 'collect' && collection.collect(player, level.world)) {
+      if (mode === 'collect' && collection.collect(player, level.world, gameTime)) {
         player = { ...player, jumpBufferTime: 0, wallJumpTime: 0 };
         renderer.feedback('collect', player.x, player.footY);
         jumpQueued = false;
         void refreshTarget(true);
+        notifyScore('collect');
         try { options.onCollect?.(collection.score); } catch (error) { console.error('Edgekin onCollect callback failed', error); }
       } else if (mode === 'course' && player.groundedOn === level.goalId &&
         Math.abs(player.x - level.goalX) <= level.world.characterHeight * 0.65) {

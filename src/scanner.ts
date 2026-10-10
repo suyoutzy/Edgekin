@@ -10,10 +10,53 @@ const snapshots = new WeakMap<World, PageSnapshot[]>();
 export function getPageSnapshot(world: World): PageSnapshot[] { return snapshots.get(world) ?? []; }
 
 const TEXT_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LI', 'BLOCKQUOTE', 'PRE']);
-const MEDIA_TAGS = new Set(['IMG', 'VIDEO', 'CANVAS', 'SVG', 'CIRCLE', 'ELLIPSE']);
+const MEDIA_TAGS = new Set(['IMG', 'VIDEO', 'CANVAS', 'SVG', 'CIRCLE', 'ELLIPSE', 'POLYGON']);
 export const CONTOUR_BUDGET = 240;
 function visibleColor(color: string): boolean {
   return color !== 'transparent' && color !== 'rgba(0, 0, 0, 0)';
+}
+
+/** Read explicit CSS/SVG polygons; keep convex shapes with 3–16 vertices. */
+function polygonOf(element: Element, rect: DOMRect, clipPath: string): [number, number][] | null {
+  let points: [number, number][] = [];
+  const polygon = element instanceof SVGPolygonElement ? element :
+    element.tagName.toUpperCase() === 'SVG' ? element.querySelector('polygon') : null;
+  if (polygon instanceof SVGPolygonElement && polygon.points.numberOfItems >= 3 && polygon.points.numberOfItems <= 16) {
+    const matrix = polygon.getScreenCTM();
+    if (!matrix) return null;
+    for (let i = 0; i < polygon.points.numberOfItems; i++) {
+      const point = polygon.points.getItem(i).matrixTransform(matrix);
+      points.push([point.x, point.y]);
+    }
+    const bounds = polygon.getBoundingClientRect();
+    if (bounds.width < rect.width * .75 || bounds.height < rect.height * .75) return null;
+  } else if (/^polygon\(/.test(clipPath)) {
+    const pairs = clipPath.slice(8, -1).split(',');
+    if (pairs.length < 3 || pairs.length > 16) return null;
+    for (const pair of pairs) {
+      const match = pair.trim().match(/^(-?[\d.]+)(%|px)?\s+(-?[\d.]+)(%|px)?$/);
+      if (!match) return null;
+      points.push([rect.left + Number(match[1]) * (match[2] === '%' ? rect.width / 100 : 1),
+        rect.top + Number(match[3]) * (match[4] === '%' ? rect.height / 100 : 1)]);
+    }
+  } else return null;
+  let direction = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]!, b = points[(i + 1) % points.length]!, c = points[(i + 2) % points.length]!;
+    if (!a.every(Number.isFinite)) return null;
+    const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (Math.abs(cross) < .001) continue;
+    if (direction && Math.sign(cross) !== direction) return null;
+    direction = Math.sign(cross);
+  }
+  // Same-turn star paths can self-intersect. Every vertex must also lie on
+  // the inward side of every edge before treating this as a convex solid.
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]!, b = points[(i + 1) % points.length]!;
+    if (points.some(point => direction * ((b[0] - a[0]) * (point[1] - a[1]) -
+      (b[1] - a[1]) * (point[0] - a[0])) < -.001)) return null;
+  }
+  return direction ? points : null;
 }
 
 function* scanSteps(root: HTMLElement, width: number, height: number): Generator<void, World> {
@@ -48,9 +91,11 @@ function* scanSteps(root: HTMLElement, width: number, height: number): Generator
     const control = ['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT'].includes(tag) ||
       ['button', 'textbox', 'combobox'].includes(element.getAttribute('role') ?? '') ||
       /(^|\s)(btn(?:-|\s|$)|Button(?:-|\s|$))/.test(element.getAttribute('class') ?? '');
-    const exposed = [.2, .5, .8].some(fraction => {
-      const x = Math.max(0, Math.min(width - 1, rect.left + rect.width * fraction));
-      const y = Math.max(0, Math.min(height - 1, rect.top + Math.min(rect.height * .5, 12)));
+    const exposed = (MEDIA_TAGS.has(tag) || style.backgroundImage !== 'none' ?
+      [[.2, .12], [.5, .12], [.8, .12], [.2, .5], [.5, .5], [.8, .5], [.5, .8]] :
+      [[.2, 0], [.5, 0], [.8, 0]]).some(([fx, fy]) => {
+      const x = Math.max(0, Math.min(width - 1, rect.left + rect.width * fx!));
+      const y = Math.max(0, Math.min(height - 1, rect.top + (fy ? rect.height * fy : Math.min(rect.height * .5, 12))));
       const hit = document.elementFromPoint(x, y);
       return hit === element || (hit !== null && element.contains(hit));
     });
@@ -71,8 +116,12 @@ function* scanSteps(root: HTMLElement, width: number, height: number): Generator
         (radiusText.includes('%') && Number.parseFloat(radiusText) >= 50) ||
         (Math.abs(rect.width - rect.height) < Math.min(rect.width, rect.height) * .1 &&
           radius >= Math.min(rect.width, rect.height) * .47);
-      shapes.push({ id: shapes.length, left: rect.left, right: rect.right,
-        top: rect.top, bottom: rect.bottom, radius, kind: ellipse ? 'ellipse' : 'rect',
+      const points = polygonOf(element, rect, style.clipPath);
+      shapes.push({ id: shapes.length, left: points ? Math.min(...points.map(point => point[0])) : rect.left,
+        right: points ? Math.max(...points.map(point => point[0])) : rect.right,
+        top: points ? Math.min(...points.map(point => point[1])) : rect.top,
+        bottom: points ? Math.max(...points.map(point => point[1])) : rect.bottom,
+        radius, kind: points ? 'polygon' : ellipse ? 'ellipse' : 'rect', ...(points ? { points } : {}),
         ...(icon ? { detail: 'icon' as const } : {}), ...(control ? { control: true } : {}),
         ...(MEDIA_TAGS.has(tag) || style.backgroundImage !== 'none' ? { media: true } : {}) });
     } else if (TEXT_TAGS.has(tag) && element.textContent?.trim()) {

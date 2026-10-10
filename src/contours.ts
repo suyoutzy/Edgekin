@@ -10,6 +10,7 @@ export function containsShape(outer: Shape, inner: Shape): boolean {
 
 function vertices(shape: Shape): [number, number][] {
   const { left, right, top, bottom } = shape;
+  if (shape.kind === 'polygon' && shape.points) return shape.points;
   if (shape.kind === 'ellipse') {
     const cx = (left + right) / 2, cy = (top + bottom) / 2;
     return Array.from({ length: 48 }, (_, i) => {

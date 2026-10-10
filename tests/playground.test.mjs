@@ -15,7 +15,8 @@ test('a sparse page gains a bounded connected set of actual jump surfaces', () =
   const original = floor(), result = addGapPlatforms(original);
   assert.equal(original.platforms.length, 1, 'the page snapshot is retained');
   const added = result.platforms.filter(item => item.generated === 'gap');
-  assert.ok(added.length >= 3 && added.length <= 12);
+  assert.ok(added.length >= 2 && added.length <= 5);
+  assert.ok(added.filter(item => item.blink).length <= 1);
   const graph = reachableJumps(result);
   const connected = new Set([0]);
   for (let pass = 0; pass < added.length; pass++) for (const id of [...connected]) {

@@ -3,9 +3,27 @@ import { getSegment, segmentSlice } from './contours.js';
 import { playerWidth } from './dimensions.js';
 const shapeMaps = new WeakMap<World, Map<number, Shape>>();
 
-/** Exact axis slices for ellipses and uniformly rounded rectangles. */
+/** Convex polygon projection clipped to a body-width/body-height slab. */
+function polygonSlice(shape: Shape, low: number, high: number, axis: 0 | 1): [number, number] | null {
+  const values: number[] = [], points = shape.points ?? [];
+  const other = axis === 0 ? 1 : 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]!, b = points[(i + 1) % points.length]!;
+    if (a[axis] >= low && a[axis] <= high) values.push(a[other]);
+    const delta = b[axis] - a[axis];
+    if (Math.abs(delta) < .000001) continue;
+    for (const bound of [low, high]) {
+      const t = (bound - a[axis]) / delta;
+      if (t >= 0 && t <= 1) values.push(a[other] + (b[other] - a[other]) * t);
+    }
+  }
+  return values.length ? [Math.min(...values), Math.max(...values)] : null;
+}
+
+/** Exact axis slices for convex polygons, ellipses and uniformly rounded rectangles. */
 export function verticalSlice(shape: Shape, left: number, right: number): [number, number] | null {
   if (right <= shape.left || left >= shape.right) return null;
+  if (shape.kind === 'polygon') return polygonSlice(shape, left, right, 0);
   const center = (shape.left + shape.right) / 2;
   const x = Math.max(left, Math.min(right, center));
   if (shape.kind === 'ellipse') {
@@ -23,6 +41,7 @@ export function verticalSlice(shape: Shape, left: number, right: number): [numbe
 
 export function horizontalSlice(shape: Shape, top: number, bottom: number): [number, number] | null {
   if (bottom <= shape.top || top >= shape.bottom) return null;
+  if (shape.kind === 'polygon') return polygonSlice(shape, top, bottom, 1);
   const center = (shape.top + shape.bottom) / 2;
   const y = Math.max(top, Math.min(bottom, center));
   if (shape.kind === 'ellipse') {
@@ -85,6 +104,11 @@ export function normalizeShapes(input: Shape[], size: number, clearanceHeight = 
       Math.abs(other.right - original.right) < duplicateInset && Math.abs(other.top - original.top) < duplicateInset &&
       Math.abs(other.bottom - original.bottom) < duplicateInset);
     if (duplicate) {
+      if (original.kind === 'polygon') {
+        duplicate.kind = 'polygon'; duplicate.points = original.points;
+        duplicate.left = original.left; duplicate.right = original.right;
+        duplicate.top = original.top; duplicate.bottom = original.bottom;
+      }
       if (original.control) duplicate.control = true;
       if (original.media) duplicate.media = true;
       continue;

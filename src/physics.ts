@@ -2,6 +2,7 @@ import type { Controls, Platform, Player, World } from './types.js';
 import { horizontalSlice, surfaceY, verticalSlice } from './geometry.js';
 import { segmentSlice } from './contours.js';
 import { bodyHeight, playerWidth } from './dimensions.js';
+import { platformIsActive } from './platform-state.js';
 export { bodyHeight, characterHeight, CROUCH_RATIO, playerWidth } from './dimensions.js';
 
 export const STEP_SECONDS = 1 / 60;
@@ -35,7 +36,7 @@ export function gravity(world: World): number {
 
 /** Shared by stance changes, endpoint validation and route connections. */
 export function canOccupy(world: World, x: number, footY: number, crouching = false,
-  supportId?: number | null): boolean {
+  supportId?: number | null, seconds = 0): boolean {
   const half = playerWidth(world) / 2;
   const top = footY - bodyHeight(world, crouching);
   if (x - half < 0 || x + half > world.width || top < 0 || footY > world.height) return false;
@@ -54,7 +55,7 @@ export function canOccupy(world: World, x: number, footY: number, crouching = fa
   for (const wall of world.walls ?? []) {
     if (Math.abs(wall.x - x) < half - .001 && wall.top < footY - .01 && wall.bottom > top + .01) return false;
   }
-  return !surfaces.lines.some(platform => platform.id !== supportId &&
+  return !surfaces.lines.some(platform => platformIsActive(platform, seconds) && platform.id !== supportId &&
     x + half > platform.left && x - half < platform.right && platform.top > top + .01 && platform.top < footY - .01);
 }
 
@@ -100,10 +101,10 @@ export function spawnPlayer(platform: Platform, world: World, x = (platform.left
   };
 }
 
-export function stepPlayer(player: Player, controls: Controls, world: World, dt = STEP_SECONDS): Player {
+export function stepPlayer(player: Player, controls: Controls, world: World, dt = STEP_SECONDS, seconds = 0): Player {
   const halfWidth = playerWidth(world) / 2;
   const crouching = Boolean(controls.crouch || (player.crouching &&
-    !canOccupy(world, player.x, player.footY, false, player.groundedOn)));
+    !canOccupy(world, player.x, player.footY, false, player.groundedOn, seconds)));
   const height = bodyHeight(world, crouching);
   let wallJumpTime = Math.max(0, (player.wallJumpTime ?? 0) - dt);
   let wallJumpDirection = player.wallJumpDirection ?? 0;
@@ -135,6 +136,7 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
     }
   }
   for (const platform of surfaces.lines) {
+    if (!platformIsActive(platform, seconds)) continue;
     if (bodyTop >= platform.top || player.footY <= platform.top) continue;
     if (x > player.x && player.x + halfWidth <= platform.left && x + halfWidth >= platform.left) {
       x = Math.min(x, platform.left - halfWidth);
@@ -160,9 +162,9 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
 
   if (groundedOn !== null) {
     const surface = surfaces.byId.get(groundedOn);
-    if (!surface || x + halfWidth <= surface.left || x - halfWidth >= surface.right) {
+    if (!surface || !platformIsActive(surface, seconds) || x + halfWidth <= surface.left || x - halfWidth >= surface.right) {
       groundedOn = null;
-      coyoteTime = COYOTE_SECONDS;
+      coyoteTime = surface && platformIsActive(surface, seconds) ? COYOTE_SECONDS : 0;
     } else {
       footY = surfaceY(surface, x, world);
     }
@@ -184,6 +186,12 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
 
   if (groundedOn === null) {
     const previousFootY = footY;
+    if (controls.fastFall) {
+      if (velocityY < world.characterHeight * 22) event = 'fast-fall';
+      velocityY = Math.max(velocityY, world.characterHeight * 22);
+      jumpBufferTime = 0;
+      coyoteTime = 0;
+    }
     velocityY += gravity(world) * dt;
     footY += velocityY * dt;
 
@@ -209,6 +217,7 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
         }
       }
       for (const platform of surfaces.lines) {
+        if (!platformIsActive(platform, seconds)) continue;
         if (previousTop >= platform.top - 0.001 && nextTop <= platform.top &&
           x + halfWidth > platform.left && x - halfWidth < platform.right &&
           (!ceiling || platform.top > ceiling.top)) ceiling = platform;
@@ -221,6 +230,7 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
     } else {
       let landing: Platform | undefined;
       for (const platform of world.platforms) {
+        if (!platformIsActive(platform, seconds)) continue;
         if (x + halfWidth <= platform.left || x - halfWidth >= platform.right) continue;
         const y = surfaceY(platform, x, world);
         if (previousFootY <= y + 0.001 && footY >= y &&

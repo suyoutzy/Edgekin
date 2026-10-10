@@ -291,6 +291,7 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
   const viable = eligible.filter(({ level }) => {
     const start = byId.get(level.startId)!;
     const goal = byId.get(level.goalId)!;
+    if (start.blink || goal.blink) return false;
     const possibleSeparation = Math.max(...[0, 1].flatMap(a => [0, 1].map(b =>
       Math.hypot(pointOn(start, a) - pointOn(goal, b),
         surfaceY(start, pointOn(start, a), world) - surfaceY(goal, pointOn(goal, b), world)))));
@@ -330,7 +331,7 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
       const selected = { ...candidate, startX: pointOn(start, random()), goalX: pointOn(goal, random()) };
       if (!clearAt(world, start, selected.startX) || !clearAt(world, goal, selected.goalX)) continue;
       const underControls = (platform: Platform, x: number): boolean =>
-        x > world.width - 420 && surfaceY(platform, x, world) < 145;
+        x > world.width - 520 && surfaceY(platform, x, world) < 145;
       if (underControls(start, selected.startX) || underControls(goal, selected.goalX)) continue;
       const firstJump = selected.recipes[0];
       if (firstJump && !walkClear(start, selected.startX, firstJump.takeoffX)) continue;

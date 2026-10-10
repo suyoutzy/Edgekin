@@ -15,7 +15,7 @@ function floorWorld() {
 function replay(world, from, target, patrols = []) {
   let player = { ...from, jumpBufferTime: 0, wallJumpTime: 0 }, time = target.startTime;
   for (const input of target.actions) {
-    const next = stepPlayer(player, input, world);
+    const next = stepPlayer(player, input, world, STEP_SECONDS, time);
     assert.equal(hitsPatrol(player, next, world, patrols, time, time + STEP_SECONDS), false,
       'the witness must avoid dynamic hazards');
     player = next;
@@ -43,7 +43,7 @@ test('a coin is counted once, updates the safe checkpoint and survives map rebui
   assert.equal(run.score, 1, 'regenerating geometry does not reset the score');
 });
 
-test('continuous targets originate at each collected position and remain distant and replayable', () => {
+test('continuous targets originate at each collected position and remain varied and replayable', () => {
   const world = floorWorld(), graph = new Map([[0, []]]), run = new CollectionSession();
   const sourcePlatforms = world.platforms;
   run.begin(world, sourcePlatforms[0], 100);
@@ -52,7 +52,8 @@ test('continuous targets originate at each collected position and remain distant
   for (let count = 0; count < 24; count++) {
     const target = chooseReward(world, from, graph, { time, random: rng, recent: run.recent });
     assert.ok(target, 'a broad surface supports uninterrupted collection');
-    assert.ok(Math.hypot(target.x - from.x, target.footY - from.footY) >= rewardDistance(world));
+    assert.ok(Math.hypot(target.x - from.x, target.footY - from.footY) >= world.characterHeight * 2,
+      'only immediate recollection is excluded; distance is not a difficulty score');
     const result = replay(world, from, target);
     run.target = target;
     assert.equal(run.collect(result.player, world), true);
@@ -161,7 +162,8 @@ test('a patrol can be crossed safely by actual jumping at eight starting phases'
   for (let phase = 0; phase < 1; phase += .125) {
     const patrols = [{ id: 0, platformId: 0, left: 650, right: 710, footY: 550,
       radius: 7.5, period: 3.5, phase }];
-    const target = chooseReward(world, from, new Map([[0, []]]), { patrols, random: random() });
+    const target = chooseReward(world, from, new Map([[0, []]]), { patrols, random: random(),
+      recent: [90, 230, 450, 710].map(x => ({ x, footY: 550, platformId: 0 })) });
     assert.ok(target, `phase ${phase} must permit a target`);
     assert.ok(target.x > 755, 'the tested route actually crosses the patrol');
     assert.ok(target.jumpCount > 0);
@@ -199,7 +201,8 @@ test('coins can use a patrol range when the actual arrival is safe', () => {
   const world = floorWorld(), from = spawnPlayer(world.platforms[0], world, 100);
   const patrols = [{ id: 0, platformId: 0, left: 300, right: 1340, footY: 550,
     radius: 7.5, period: 12, phase: .5 }];
-  const target = chooseReward(world, from, new Map([[0, []]]), { patrols, random: random() });
+  const target = chooseReward(world, from, new Map([[0, []]]), { patrols, random: random(),
+    recent: [90, 230].map(x => ({ x, footY: 550, platformId: 0 })) });
   assert.ok(target);
   assert.ok(target.x >= 300 && target.x <= 1340, 'a swept area is no longer completely excluded');
   replay(world, from, target, patrols);

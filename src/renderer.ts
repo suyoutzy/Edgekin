@@ -1,9 +1,30 @@
-import type { Level, Patrol, Player, RewardTarget } from './types.js';
+import type { Level, Patrol, Player, RewardTarget, Shape } from './types.js';
 import { surfaceY } from './geometry.js';
 import { bodyHeight } from './physics.js';
 import { patrolPosition } from './hazards.js';
+import { platformIsActive, platformPhase } from './platform-state.js';
 
-type FeedbackType = NonNullable<Player['event']> | 'respawn' | 'complete' | 'collect' | 'hit';
+type FeedbackType = NonNullable<Player['event']> | 'respawn' | 'complete' | 'collect' | 'hit' | 'penalty';
+
+function traceShape(context: CanvasRenderingContext2D, shape: Shape): void {
+  if (shape.kind === 'polygon' && shape.points?.length) {
+    context.moveTo(...shape.points[0]!);
+    for (const point of shape.points.slice(1)) context.lineTo(...point);
+    context.closePath();
+  } else if (shape.kind === 'ellipse') {
+    context.moveTo(shape.right, (shape.top + shape.bottom) / 2);
+    context.ellipse((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2,
+      (shape.right - shape.left) / 2, (shape.bottom - shape.top) / 2, 0, 0, Math.PI * 2);
+  } else context.roundRect(shape.left, shape.top, shape.right - shape.left,
+    shape.bottom - shape.top, shape.radius);
+}
+
+function outline(context: CanvasRenderingContext2D, color: string, width = 4): void {
+  context.strokeStyle = 'rgba(255,255,255,.95)'; context.lineWidth = width + 3;
+  context.stroke();
+  context.strokeStyle = color; context.lineWidth = width;
+  context.stroke();
+}
 
 interface RunView {
   mode: 'collect' | 'course';
@@ -48,47 +69,30 @@ export class Renderer {
     const { world } = level;
     const size = world.characterHeight;
 
-    context.strokeStyle = '#1376b5';
-    context.lineWidth = 2.5;
-    context.shadowColor = 'rgba(255,255,255,.85)';
-    context.shadowBlur = 3;
+    context.shadowBlur = 0;
     context.setLineDash([]);
     context.lineCap = 'butt';
     context.lineJoin = 'round';
     context.beginPath();
     for (const shape of world.shapes ?? []) {
       if (shape.hollow) continue;
-      if (shape.kind === 'ellipse') {
-        context.moveTo(shape.right, (shape.top + shape.bottom) / 2);
-        context.ellipse((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2,
-          (shape.right - shape.left) / 2, (shape.bottom - shape.top) / 2, 0, 0, Math.PI * 2);
-      } else {
-        context.roundRect(shape.left, shape.top, shape.right - shape.left,
-          shape.bottom - shape.top, shape.radius);
-      }
+      traceShape(context, shape);
     }
     for (const segment of world.segments ?? []) {
       context.moveTo(segment.x1, segment.y1);
       context.lineTo(segment.x2, segment.y2);
     }
-    context.stroke();
+    outline(context, '#0669b2');
 
     // Keep every collision edge visible; emphasize the local space without
     // removing distant geometry or drawing a prescribed solution.
     const nearby = (left: number, right: number, top: number, bottom: number): boolean =>
       Math.hypot(Math.max(left - player.x, player.x - right, 0),
         Math.max(top - player.footY, player.footY - bottom, 0)) < size * 5;
-    context.strokeStyle = '#0797c9';
-    context.lineWidth = 3.5;
     context.beginPath();
     for (const shape of world.shapes ?? []) {
       if (shape.hollow || !nearby(shape.left, shape.right, shape.top, shape.bottom)) continue;
-      if (shape.kind === 'ellipse') {
-        context.moveTo(shape.right, (shape.top + shape.bottom) / 2);
-        context.ellipse((shape.left + shape.right) / 2, (shape.top + shape.bottom) / 2,
-          (shape.right - shape.left) / 2, (shape.bottom - shape.top) / 2, 0, 0, Math.PI * 2);
-      } else context.roundRect(shape.left, shape.top, shape.right - shape.left,
-        shape.bottom - shape.top, shape.radius);
+      traceShape(context, shape);
     }
     for (const segment of world.segments ?? []) {
       if (!nearby(Math.min(segment.x1, segment.x2), Math.max(segment.x1, segment.x2),
@@ -96,28 +100,32 @@ export class Renderer {
       context.moveTo(segment.x1, segment.y1);
       context.lineTo(segment.x2, segment.y2);
     }
-    context.stroke();
+    outline(context, '#007fa9', 5);
 
     for (const platform of world.platforms) {
       if (platform.shapeId !== undefined) continue;
-      context.strokeStyle = platform.generated === 'gap' ? '#8554bf' : platform.kind === 'helper' ? '#e85a24' : '#1376b5';
-      context.lineWidth = platform.kind === 'helper' ? 3 : 3.5;
-      context.shadowColor = 'rgba(255,255,255,.9)';
-      context.shadowBlur = 4;
-      context.setLineDash(platform.kind === 'helper' && !platform.generated ? [7, 5] : []);
+      const seconds = run?.seconds ?? 0;
+      const active = platformIsActive(platform, seconds);
+      const warning = platform.blink && active && platform.blink.visibleSeconds - platformPhase(platform, seconds) <= 1;
+      const color = platform.blink ? warning ? '#da4932' : '#bf6300' :
+        platform.generated === 'gap' ? '#7039c6' : platform.kind === 'helper' ? '#e85a24' : '#0669b2';
+      context.setLineDash(!active ? [3, 8] : platform.kind === 'helper' && !platform.generated ? [7, 5] : []);
       context.beginPath();
       context.moveTo(platform.left, platform.top - 1);
       context.lineTo(platform.right, platform.top - 1);
-      context.stroke();
+      outline(context, color, active ? 4.5 : 1.5);
+      if (platform.blink && active) {
+        context.fillStyle = warning ? '#da4932' : '#bf6300';
+        const remaining = 1 - platformPhase(platform, seconds) / platform.blink.visibleSeconds;
+        context.fillRect(platform.left, platform.top + 6, (platform.right - platform.left) * remaining, 2);
+      }
     }
     context.setLineDash([]);
     for (const wall of world.walls ?? []) {
-      context.strokeStyle = '#1376b5';
-      context.lineWidth = 3.5;
       context.beginPath();
       context.moveTo(wall.x, wall.top);
       context.lineTo(wall.x, wall.bottom);
-      context.stroke();
+      outline(context, '#0669b2');
     }
     context.shadowBlur = 0;
 
@@ -176,7 +184,7 @@ export class Renderer {
     for (const effect of this.effects) {
       const progress = Math.max(0, Math.min(1, (time - effect.time) / 240));
       context.globalAlpha = 1 - progress;
-      context.strokeStyle = effect.type === 'ceiling' || effect.type === 'hit' ? '#d94e35' :
+      context.strokeStyle = effect.type === 'ceiling' || effect.type === 'hit' || effect.type === 'penalty' ? '#d94e35' :
         effect.type === 'collect' ? '#d69b00' : '#0797c9';
       context.lineWidth = 2;
       context.beginPath();
@@ -184,11 +192,15 @@ export class Renderer {
       context.arc(effect.x, effect.type === 'ceiling' ? effect.y - pose : effect.y,
         radius, effect.type === 'land' ? Math.PI : 0, Math.PI * 2);
       context.stroke();
-      if (effect.type === 'collect') {
+      if (effect.type === 'collect' || effect.type === 'penalty') {
         context.font = 'bold 16px system-ui';
         context.textAlign = 'center';
-        context.fillStyle = '#b67c00';
-        context.fillText('+1', effect.x, effect.y - size * (1 + progress));
+        context.fillStyle = effect.type === 'collect' ? '#b67c00' : '#bd3426';
+        context.fillText(effect.type === 'collect' ? '+1' : '−1', effect.x, effect.y - size * (1 + progress));
+      } else if (effect.type === 'fast-fall') {
+        context.fillStyle = '#0669b2';
+        context.font = 'bold 18px system-ui';
+        context.fillText('↓', effect.x + size * .6, effect.y - size * .5);
       }
     }
     context.globalAlpha = 1;
