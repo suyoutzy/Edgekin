@@ -2,7 +2,7 @@ import type { Controls, Platform, Player, World } from './types.js';
 import { horizontalSlice, surfaceY, verticalSlice } from './geometry.js';
 import { segmentSlice } from './contours.js';
 import { bodyHeight, playerWidth } from './dimensions.js';
-import { platformIsActive } from './platform-state.js';
+import { platformIsActive, touchPlatforms, updatePlatformTimers } from './platform-state.js';
 export { bodyHeight, characterHeight, CROUCH_RATIO, playerWidth } from './dimensions.js';
 
 export const STEP_SECONDS = 1 / 60;
@@ -55,7 +55,7 @@ export function canOccupy(world: World, x: number, footY: number, crouching = fa
   for (const wall of world.walls ?? []) {
     if (Math.abs(wall.x - x) < half - .001 && wall.top < footY - .01 && wall.bottom > top + .01) return false;
   }
-  return !surfaces.lines.some(platform => platformIsActive(platform, seconds) && platform.id !== supportId &&
+  return !surfaces.lines.some(platform => platformIsActive(platform, seconds, world.platformStates) && platform.id !== supportId &&
     x + half > platform.left && x - half < platform.right && platform.top > top + .01 && platform.top < footY - .01);
 }
 
@@ -102,6 +102,8 @@ export function spawnPlayer(platform: Platform, world: World, x = (platform.left
 }
 
 export function stepPlayer(player: Player, controls: Controls, world: World, dt = STEP_SECONDS, seconds = 0): Player {
+  updatePlatformTimers(world, player, seconds);
+  const touched: number[] = [];
   const halfWidth = playerWidth(world) / 2;
   const crouching = Boolean(controls.crouch || (player.crouching &&
     !canOccupy(world, player.x, player.footY, false, player.groundedOn, seconds)));
@@ -136,12 +138,14 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
     }
   }
   for (const platform of surfaces.lines) {
-    if (!platformIsActive(platform, seconds)) continue;
+    if (!platformIsActive(platform, seconds, world.platformStates)) continue;
     if (bodyTop >= platform.top || player.footY <= platform.top) continue;
     if (x > player.x && player.x + halfWidth <= platform.left && x + halfWidth >= platform.left) {
       x = Math.min(x, platform.left - halfWidth);
+      touched.push(platform.id);
     } else if (x < player.x && player.x - halfWidth >= platform.right && x - halfWidth <= platform.right) {
       x = Math.max(x, platform.right + halfWidth);
+      touched.push(platform.id);
     }
   }
   for (const wall of world.walls ?? []) {
@@ -162,11 +166,12 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
 
   if (groundedOn !== null) {
     const surface = surfaces.byId.get(groundedOn);
-    if (!surface || !platformIsActive(surface, seconds) || x + halfWidth <= surface.left || x - halfWidth >= surface.right) {
+    if (!surface || !platformIsActive(surface, seconds, world.platformStates) || x + halfWidth <= surface.left || x - halfWidth >= surface.right) {
       groundedOn = null;
-      coyoteTime = surface && platformIsActive(surface, seconds) ? COYOTE_SECONDS : 0;
+      coyoteTime = surface && platformIsActive(surface, seconds, world.platformStates) ? COYOTE_SECONDS : 0;
     } else {
       footY = surfaceY(surface, x, world);
+      touched.push(surface.id);
     }
   }
 
@@ -217,12 +222,13 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
         }
       }
       for (const platform of surfaces.lines) {
-        if (!platformIsActive(platform, seconds)) continue;
+        if (!platformIsActive(platform, seconds, world.platformStates)) continue;
         if (previousTop >= platform.top - 0.001 && nextTop <= platform.top &&
           x + halfWidth > platform.left && x - halfWidth < platform.right &&
           (!ceiling || platform.top > ceiling.top)) ceiling = platform;
       }
       if (ceiling) {
+        touched.push(ceiling.id);
         footY = Math.max(footY, ceiling.top + height);
         velocityY = 0;
         event = 'ceiling';
@@ -230,7 +236,7 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
     } else {
       let landing: Platform | undefined;
       for (const platform of world.platforms) {
-        if (!platformIsActive(platform, seconds)) continue;
+        if (!platformIsActive(platform, seconds, world.platformStates)) continue;
         if (x + halfWidth <= platform.left || x - halfWidth >= platform.right) continue;
         const y = surfaceY(platform, x, world);
         if (previousFootY <= y + 0.001 && footY >= y &&
@@ -239,6 +245,7 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
         }
       }
       if (landing) {
+        touched.push(landing.id);
         footY = surfaceY(landing, x, world);
         velocityY = 0;
         groundedOn = landing.id;
@@ -250,6 +257,7 @@ export function stepPlayer(player: Player, controls: Controls, world: World, dt 
   }
 
   const contact = groundedOn === null ? touchingWall(world, x, footY, height) : 0;
+  touchPlatforms(world, touched, seconds);
   return { x, footY, velocityY, groundedOn, crouching, coyoteTime, jumpBufferTime,
     wallSide: contact, wallJumpTime, wallJumpDirection, ...(event ? { event } : {}) };
 }

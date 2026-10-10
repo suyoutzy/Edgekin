@@ -45,6 +45,8 @@ npm test
 | `/tests/collect-harness.html` | 连续收集、分数、巡逻物、暂停冻结、返回点；`?hazards=0` 对比无障碍，`?mode=course` 检查通关模式 |
 | `/tests/sparse-harness.html` | 匿名稀疏布局、空白区补充、交叉 / 重复边框和单行控件；`?verify=1` 自动检查生成及生命周期 |
 | `/tests/experience-harness.html` | 自动验证 CSS / SVG 多边形与部分遮挡图片、11 次键盘拾取、积分里程碑、空中速降、掉落扣分和主动清零 |
+| `/tests/regions-harness.html` | 侧栏、仪表盘、瀑布流三类真实 DOM 布局，各三组种子、每组 60 枚完整物理重放的金币，检查跨区分布与局部循环 |
+| `/tests/updates-harness.html` | 实际按键收币、后台选点、支撑和金币迁移、页面替换、输入 / 主动暂停优先、更新期间销毁 |
 | `/tests/actions-harness.html` | 蹲行、墙跳、竖向路线和布局变化；建议 1920×1080 |
 | `/tests/performance-harness.html` | 300 个有效候选、240 个运行轮廓的压力场景 |
 | `/tests/arbitrary-dense.html`、`/tests/arbitrary-sparse.html` | 密集与稀疏页面布局 |

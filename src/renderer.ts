@@ -105,18 +105,22 @@ export class Renderer {
     for (const platform of world.platforms) {
       if (platform.shapeId !== undefined) continue;
       const seconds = run?.seconds ?? 0;
-      const active = platformIsActive(platform, seconds);
-      const warning = platform.blink && active && platform.blink.visibleSeconds - platformPhase(platform, seconds) <= 1;
-      const color = platform.blink ? warning ? '#da4932' : '#bf6300' :
+      const active = platformIsActive(platform, seconds, world.platformStates);
+      const status = world.platformStates?.get(platform.id);
+      const warning = platform.crumble ? status?.phase === 'warning' :
+        platform.blink && active && platform.blink.visibleSeconds - platformPhase(platform, seconds) <= 1;
+      const color = platform.crumble || platform.blink ? warning ? '#da4932' : '#bf6300' :
         platform.generated === 'gap' ? '#7039c6' : platform.kind === 'helper' ? '#e85a24' : '#0669b2';
       context.setLineDash(!active ? [3, 8] : platform.kind === 'helper' && !platform.generated ? [7, 5] : []);
       context.beginPath();
       context.moveTo(platform.left, platform.top - 1);
       context.lineTo(platform.right, platform.top - 1);
       outline(context, color, active ? 4.5 : 1.5);
-      if (platform.blink && active) {
+      if ((platform.blink || platform.crumble) && active) {
         context.fillStyle = warning ? '#da4932' : '#bf6300';
-        const remaining = 1 - platformPhase(platform, seconds) / platform.blink.visibleSeconds;
+        const remaining = platform.crumble ? status?.phase === 'warning' ?
+          Math.max(0, 1 - (seconds - status.triggeredAt) / platform.crumble.warningSeconds) : 1 :
+          1 - platformPhase(platform, seconds) / platform.blink!.visibleSeconds;
         context.fillRect(platform.left, platform.top + 6, (platform.right - platform.left) * remaining, 2);
       }
     }

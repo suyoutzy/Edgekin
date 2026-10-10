@@ -1,17 +1,20 @@
 import { assessRouteAsync, chooseLevel, endpointPair, reachableJumpsAsync, type EndpointPair } from './planner.js';
 import { createFallbackLevelAsync } from './fallback.js';
-import { spawnPlayer, stepPlayer, STEP_SECONDS } from './physics.js';
+import { canOccupy, spawnPlayer, stepPlayer, STEP_SECONDS } from './physics.js';
 import { Renderer } from './renderer.js';
-import { CONTOUR_BUDGET, scanPageAsync } from './scanner.js';
+import { CONTOUR_BUDGET, getPageSnapshot, scanPageAsync, surfaceSignature } from './scanner.js';
 import { openingCount } from './contours.js';
-import type { Level, Player, ScanTiming } from './types.js';
-import { watchPage } from './page-watch.js';
+import type { Level, Platform, Player, ScanTiming, World } from './types.js';
+import { watchPage, type PageChange } from './page-watch.js';
 import { throwIfAborted, yieldToBrowser } from './scheduling.js';
-import { CollectionSession, chooseRewardWithDiscoveryAsync } from './rewards.js';
+import { CollectionSession, chooseRewardAsync, chooseRewardWithDiscoveryAsync } from './rewards.js';
 import { createPatrols, hitsPatrol, patrolPosition } from './hazards.js';
 import { surfaceY } from './geometry.js';
 import type { JumpRecipe, Patrol, RewardTarget } from './types.js';
 import { addGapPlatformsAsync } from './playground.js';
+import { connectRegionsAsync } from './connections.js';
+import { distributedSources, regionId, regionPoints } from './regions.js';
+import { matchingPlatform, migrateBody, migrateTarget, removeSources, retainHelpers, reuseGraph, safeBody, sameSurface } from './map-update.js';
 
 export interface EdgekinOptions {
   root?: HTMLElement;
@@ -43,6 +46,9 @@ export interface SessionStats {
   target: { platformId: number; x: number; footY: number } | null;
   player: { x: number; footY: number; groundedOn: number | null } | null;
   patrols: { x: number; y: number; radius: number }[];
+  mapUpdating: boolean;
+  targetPending: boolean;
+  worldVersion: number;
 }
 
 export interface MapStats {
@@ -74,9 +80,15 @@ export interface MapStats {
   frameP95Ms: number | null;
   updateAverageMs: number | null;
   drawAverageMs: number | null;
+  eligibleRegionCount: number;
+  verifiedRegionCount: number;
+  visitedRegionCount: number;
+  pageUpdateCount: number;
+  lastPageUpdateMs: number;
+  systemRelocations: number;
 }
 
-type State = 'idle' | 'generating' | 'selecting' | 'playing' | 'paused' | 'complete' | 'unavailable' | 'destroyed';
+type State = 'idle' | 'generating' | 'transitioning' | 'selecting' | 'playing' | 'paused' | 'complete' | 'unavailable' | 'destroyed';
 
 const STYLE = `
 .edgekin-controls{position:fixed;right:22px;top:22px;z-index:1;display:flex;flex-wrap:nowrap;align-items:center;gap:8px;box-sizing:border-box;max-width:min(620px,calc(100vw - 44px));padding:10px 12px;border:1px solid #d9d9d5;border-radius:14px;background:rgba(255,255,255,.95);box-shadow:0 8px 28px rgba(0,0,0,.12);font:13px/1.35 system-ui,sans-serif;color:#242424;pointer-events:auto}
@@ -85,13 +97,17 @@ const STYLE = `
 .edgekin-controls span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .edgekin-controls button:disabled{opacity:.55;cursor:wait}
 .edgekin-controls button[hidden]{display:none}
-.edgekin-score{flex:none;width:96px;display:grid;gap:4px}
+.edgekin-score{position:relative;flex:none;width:96px;display:grid;gap:4px}
 .edgekin-score[hidden]{display:none}
 .edgekin-score span{font-weight:750;color:#835900}
 .edgekin-score progress{width:96px;height:7px;appearance:none;border:0;border-radius:9px;background:#e9e5dc;overflow:hidden}
 .edgekin-score progress::-webkit-progress-bar{background:#e9e5dc;border-radius:9px}
 .edgekin-score progress::-webkit-progress-value{background:linear-gradient(90deg,#e9a716,#ffd454);border-radius:9px}
 .edgekin-score progress::-moz-progress-bar{background:#e9a716;border-radius:9px}
+.edgekin-score .edgekin-score-delta{position:absolute;right:0;top:-4px;overflow:visible;font-weight:850;font-size:16px;color:#bd8100;text-shadow:0 1px 3px white;pointer-events:none;animation:edgekin-score-rise .6s ease-out forwards}
+.edgekin-score .edgekin-score-delta.loss{color:#ce352b}
+@keyframes edgekin-score-rise{0%{opacity:1;transform:translateY(0) scale(.85)}25%{opacity:1;transform:translateY(-5px) scale(1.1)}100%{opacity:0;transform:translateY(-24px) scale(1)}}
+@media(prefers-reduced-motion:reduce){.edgekin-score .edgekin-score-delta{animation:none}}
 `;
 
 export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
@@ -113,7 +129,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
   });
   const controls = document.createElement('div');
   controls.className = 'edgekin-controls';
-  controls.title = mode === 'collect' ? '硬币 +1；碰红球或掉落 −1（最低 0），回到绿色返回点。空中 ↓ 快速下落；琥珀平台 5 秒后消失，2 秒后重现，变红时请离开。' :
+  controls.title = mode === 'collect' ? '硬币 +1；碰红球或掉落 −1（最低 0），回到绿色返回点。空中 ↓ 快速下落；琥珀平台触碰后约 0.3 秒消失，3 秒后重现，变红时请离开。' :
     '用方向键抵达终点；掉落回原起点，通关后可以重开。';
   const label = document.createElement('span');
   label.setAttribute('role', 'status');
@@ -162,9 +178,34 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
   let targetSelectionMs = 0;
   let targetPending: Promise<void> = Promise.resolve();
   let targetGeneration = new AbortController();
+  let preparation = new AbortController();
+  let prepared: { parent: RewardTarget; candidate: RewardTarget; version: number } | null = null;
+  let targetBusy = false;
+  let lastSearch: Player | null = null;
+  let mapUpdating = false;
+  let updateQueued = false;
+  let resumeAfterUpdate = false;
+  let worldVersion = 0;
+  const verifiedRegions = new Set<number>();
+  const scoreEffects: { node: HTMLSpanElement; timer: number }[] = [];
+  let lastNotifiedScore = 0;
   const frameSamples: { interval: number; update: number; draw: number }[] = [];
 
   function notifyScore(reason: 'collect' | 'respawn' | 'reset'): void {
+    const delta = collection.score - lastNotifiedScore;
+    lastNotifiedScore = collection.score;
+    if (reason !== 'reset' && delta) {
+      if (scoreEffects.length >= 3) { const old = scoreEffects.shift()!; old.node.remove(); window.clearTimeout(old.timer); }
+      const node = document.createElement('span');
+      node.className = `edgekin-score-delta${delta < 0 ? ' loss' : ''}`;
+      node.textContent = delta > 0 ? `+${delta}` : `−${-delta}`;
+      node.setAttribute('aria-hidden', 'true');
+      scoreBox.append(node);
+      const effect = { node, timer: window.setTimeout(() => {
+        node.remove(); const index = scoreEffects.indexOf(effect); if (index >= 0) scoreEffects.splice(index, 1);
+      }, 600) };
+      scoreEffects.push(effect);
+    }
     try { options.onScoreChange?.(collection.score, reason); }
     catch (error) { console.error('Edgekin onScoreChange callback failed', error); }
   }
@@ -173,6 +214,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     const descriptions: Record<Exclude<State, 'destroyed'>, [string, string]> = {
       idle: [mode === 'collect' ? '收集金色硬币，避开红球。' : '网页边缘，随手一跳。', '开始'],
       generating: ['正在根据当前网页生成关卡…', '生成中'],
+      transitioning: ['页面更新中，正在寻找安全落脚点…', '暂停'],
       selecting: ['寻找下一枚硬币…', '暂停'],
       playing: ['←/→ 移动 · ↑ 跳跃/借墙 · ↓ 蹲/速降', '暂停'],
       paused: ['已暂停', '继续'],
@@ -181,7 +223,8 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     };
     if (state === 'destroyed') return;
     const [description, action] = descriptions[state];
-    label.textContent = description;
+    label.textContent = state === 'playing' && targetBusy ? '寻找下一枚硬币… · 可继续移动' :
+      state === 'playing' && mapUpdating ? '地图更新中 · 可继续移动' : description;
     label.title = description;
     scoreLabel.textContent = `积分 ${collection.score}`;
     const base = Math.floor(Math.max(0, collection.score - 1) / 10) * 10;
@@ -223,6 +266,9 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
   function restart(): void {
     if (!level || state === 'destroyed' || state === 'generating') return;
     pause();
+    preparation.abort(); prepared = null; lastSearch = null;
+    for (const effect of scoreEffects) { window.clearTimeout(effect.timer); effect.node.remove(); }
+    scoreEffects.length = 0;
     let scoreChanged = false;
     if (mode === 'collect') {
       const start = level.world.platforms.find(platform => platform.id === level?.startId);
@@ -232,6 +278,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
       scoreChanged = previousScore > 0;
       collection.begin(level.world, start, level.startX);
       gameTime = 0;
+      level.world.platformStates?.clear();
     }
     respawn();
     state = 'paused';
@@ -245,6 +292,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     collection.target = target;
     level.goalId = target.platformId;
     level.goalX = target.x;
+    verifiedRegions.add(regionId(level.world, target.x, target.footY));
     if (mapStats) {
       mapStats.routePlatformCount = target.route.length;
       mapStats.endpointDistance = Math.hypot(target.x - from.x, target.footY - from.footY);
@@ -256,14 +304,34 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
       mapStats.routeToleranceRatio = null;
       mapStats.minLandingMargin = null;
     }
+    prepareNext(target);
   }
 
-  function refreshTarget(autoResume: boolean): Promise<void> {
+  function prepareNext(parent: RewardTarget): void {
+    preparation.abort(); preparation = new AbortController(); prepared = null;
+    if (!level || mode !== 'collect') return;
+    const activeLevel = level, version = worldVersion, signal = preparation.signal;
+    const surface = activeLevel.world.platforms.find(platform => platform.id === parent.platformId);
+    if (!surface) return;
+    const from = spawnPlayer(surface, activeLevel.world, parent.x,
+      !canOccupy(activeLevel.world, parent.x, parent.footY, false, surface.id, gameTime));
+    const rotation = collection.rotation.clone(); rotation.commit(parent.regionId ?? regionId(activeLevel.world, parent.x, parent.footY));
+    void (async () => {
+      await yieldToBrowser(signal);
+      const candidate = await chooseRewardWithDiscoveryAsync(activeLevel.world, from, graph,
+        { time: gameTime + parent.actions.length * STEP_SECONDS, patrols, recent: [...collection.recent, parent], rotation }, signal);
+      throwIfAborted(signal);
+      if (level === activeLevel && version === worldVersion && collection.target === parent && candidate)
+        prepared = { parent, candidate, version };
+    })().catch(error => { if (!signal.aborted) console.error('Edgekin reward preparation failed', error); });
+  }
+
+  function refreshTarget(_autoResume = false, preferred?: RewardTarget): Promise<void> {
     if (!level || !player) return Promise.resolve();
     targetGeneration.abort();
     targetGeneration = new AbortController();
-    const source = { ...player }, activeLevel = level, signal = targetGeneration.signal;
-    if (autoResume) state = 'selecting';
+    const source = { ...player }, activeLevel = level, signal = targetGeneration.signal, version = worldVersion;
+    lastSearch = source; targetBusy = true;
     updateControls();
     const started = performance.now();
     targetPending = (async () => {
@@ -272,20 +340,36 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         const extra = await reachableJumpsAsync(activeLevel.world, [source.groundedOn], signal);
         for (const [id, recipes] of extra) graph.set(id, recipes);
       }
-      const target = await chooseRewardWithDiscoveryAsync(activeLevel.world, source, graph,
-        { patrols, time: gameTime, recent: collection.recent }, signal);
+      let target = preferred ? await chooseRewardAsync(activeLevel.world, source, graph,
+        { patrols, time: gameTime, preferred, rotation: collection.rotation }, signal) : null;
+      if (!target) target = await chooseRewardWithDiscoveryAsync(activeLevel.world, source, graph,
+        { patrols, time: gameTime, recent: collection.recent, rotation: collection.rotation }, signal);
       throwIfAborted(signal);
-      if (level !== activeLevel) return;
+      if (level !== activeLevel || version !== worldVersion || !player) return;
+      // The player can keep moving while planning. Recheck from the actual new pose.
+      let validatedFrom = source;
+      if (target && (player.groundedOn !== source.groundedOn || Math.abs(player.x - source.x) > activeLevel.world.characterHeight * .5 ||
+        gameTime - target.startTime > .1)) {
+        validatedFrom = { ...player };
+        lastSearch = validatedFrom;
+        target = await chooseRewardAsync(activeLevel.world, validatedFrom, graph,
+          { patrols, time: gameTime, preferred: target, rotation: collection.rotation }, signal);
+        throwIfAborted(signal);
+        if (level !== activeLevel || version !== worldVersion) return;
+      }
+      // A second asynchronous validation can also finish after the player has moved.
+      if (target && (player.groundedOn !== validatedFrom.groundedOn ||
+        Math.abs(player.x - validatedFrom.x) > activeLevel.world.characterHeight * .5)) target = null;
       targetSelectionMs = performance.now() - started;
       if (target) {
-        applyTarget(target, source);
-        if (state === 'selecting') state = 'playing';
-      } else state = 'complete';
+        applyTarget(target, player);
+      }
+      targetBusy = false;
       updateControls();
       draw();
     })().catch(error => {
       if (signal.aborted) return;
-      state = 'complete';
+      targetBusy = false;
       updateControls();
       console.error('Edgekin reward selection failed', error);
     });
@@ -324,7 +408,9 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         player = { ...player, jumpBufferTime: 0, wallJumpTime: 0 };
         renderer.feedback('collect', player.x, player.footY);
         jumpQueued = false;
-        void refreshTarget(true);
+        const cached = prepared?.version === worldVersion ? prepared.candidate : undefined;
+        prepared = null;
+        void refreshTarget(true, cached);
         notifyScore('collect');
         try { options.onCollect?.(collection.score); } catch (error) { console.error('Edgekin onCollect callback failed', error); }
       } else if (mode === 'course' && player.groundedOn === level.goalId &&
@@ -336,6 +422,9 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         try { options.onComplete?.(); } catch (error) { console.error('Edgekin onComplete callback failed', error); }
       }
     }
+    if (mode === 'collect' && !collection.target && !targetBusy && !mapUpdating && player?.groundedOn !== null && player &&
+      (!lastSearch || player.groundedOn !== lastSearch.groundedOn || Math.abs(player.x - lastSearch.x) > level.world.characterHeight * 2))
+      void refreshTarget();
     const update = performance.now() - updateStart;
     const drawStart = performance.now();
     draw(time);
@@ -346,9 +435,10 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
 
   function pause(): void {
     resumeRequested = false;
+    resumeAfterUpdate = false;
     window.clearTimeout(downHoldTimer);
     downHoldTimer = 0;
-    if (state !== 'playing' && state !== 'selecting') return;
+    if (state !== 'playing' && state !== 'selecting' && state !== 'transitioning') return;
     state = 'paused';
     cancelAnimationFrame(frameId);
     pressed.clear();
@@ -361,6 +451,8 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     if (state === 'destroyed') return Promise.resolve();
     generation.abort();
     targetGeneration.abort();
+    preparation.abort(); prepared = null; targetBusy = false; lastSearch = null;
+    worldVersion++; verifiedRegions.clear(); mapUpdating = false; updateQueued = false; resumeAfterUpdate = false;
     generation = new AbortController();
     const signal = generation.signal;
     resumeRequested = false;
@@ -391,6 +483,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
       const totalStart = performance.now();
       await yieldToBrowser(signal);
       const scanned = await scanPageAsync(root, innerWidth, innerHeight, signal);
+      scanned.reserved = [controls.getBoundingClientRect()];
       const shapes = scanned.shapes ?? [];
       mapStats = {
         outlineCount: shapes.length,
@@ -411,9 +504,17 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
         routeToleranceRatio: null, minLandingMargin: null, estimatedRouteSeconds: null,
         scanTiming: scanned.scanTiming ?? null, planningMs: 0, generationMs: 0, retries: 0,
         frameSamples: 0, averageFps: null, frameP95Ms: null, updateAverageMs: null, drawAverageMs: null,
+        eligibleRegionCount: 0, verifiedRegionCount: 0, visitedRegionCount: 0,
+        pageUpdateCount: 0, lastPageUpdateMs: 0, systemRelocations: 0,
       };
       const planningStart = performance.now();
-      const enriched = mode === 'collect' ? await addGapPlatformsAsync(scanned, signal) : scanned;
+      let enriched = scanned;
+      if (mode === 'collect') {
+        const visualSource = { ...scanned, platforms: scanned.platforms.filter(platform => platform.tier !== 'text') };
+        const firstGraph = await reachableJumpsAsync(visualSource, undefined, signal);
+        const repaired = await connectRegionsAsync(visualSource, firstGraph, signal);
+        enriched = await addGapPlatformsAsync(repaired.world, signal);
+      }
       mapStats.gapPlatformCount = enriched.platforms.filter(platform => platform.generated === 'gap').length;
       const visual = { ...enriched, platforms: enriched.platforms.filter(platform => platform.tier !== 'text') };
       graph = await reachableJumpsAsync(visual, undefined, signal);
@@ -453,10 +554,11 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
           const goal = level.world.platforms.find(platform => platform.id === level?.goalId)!;
           patrols = options.hazards === false ? [] : createPatrols(level.world,
             [player, { x: level.goalX, footY: surfaceY(goal, level.goalX, level.world) }], level.route);
-          let target = await chooseRewardWithDiscoveryAsync(level.world, player, graph, { patrols }, signal);
+          let target = await chooseRewardWithDiscoveryAsync(level.world, player, graph,
+            { patrols, rotation: collection.rotation }, signal);
           if (!target && patrols.length) {
             patrols = [];
-            target = await chooseRewardWithDiscoveryAsync(level.world, player, graph, {}, signal);
+            target = await chooseRewardWithDiscoveryAsync(level.world, player, graph, { rotation: collection.rotation }, signal);
           }
           throwIfAborted(signal);
           if (target) applyTarget(target, player);
@@ -469,11 +571,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
       }
       mapStats.planningMs = performance.now() - planningStart;
       mapStats.generationMs = performance.now() - totalStart;
-      stopWatching = watchPage(root, scanned, () => {
-        pause();
-        window.clearTimeout(resizeTimer);
-        void regenerate();
-      });
+      stopWatching = watchPage(root, scanned, onPageChange);
       updateControls();
       draw();
     })().catch(error => {
@@ -501,7 +599,9 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     if (signal.aborted || !resumeRequested) return;
     if ((state as State) === 'playing') return;
     if (!level || !player) return;
-    if (mode === 'collect' && !collection.target) return;
+    if (mode === 'collect' && !restoreBodies(level.world, level.world)) {
+      state = 'transitioning'; resumeAfterUpdate = true; updateControls(); return;
+    }
     state = 'playing';
     pressed.clear();
     jumpQueued = false;
@@ -510,6 +610,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     frameSamples.length = 0;
     updateControls();
     frameId = requestAnimationFrame(tick);
+    if (mode === 'collect' && !collection.target && !targetBusy) void refreshTarget();
     button.blur();
   }
 
@@ -558,21 +659,140 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
 
   function scheduleRegeneration(): void {
     if (state === 'idle') { renderer.resize(innerWidth, innerHeight); return; }
-    pause();
-    generation.abort();
-    targetGeneration.abort();
-    stopWatching?.();
-    stopWatching = null;
-    level = null;
-    player = null;
-    mapStats = null;
-    collection.target = null;
-    collection.checkpoint = null;
-    state = 'generating';
-    updateControls();
-    draw();
     window.clearTimeout(resizeTimer);
-    resizeTimer = window.setTimeout(regenerate, 180);
+    resizeTimer = window.setTimeout(() => onPageChange({ removedSourceIds: [] }), 120);
+  }
+
+  function restoreBodies(before: World, after: World): boolean {
+    if (!player) return false;
+    const checkpoint = collection.checkpoint && migrateBody(collection.checkpoint, before, after, gameTime);
+    const carried = migrateBody(player, before, after, gameTime);
+    const fallback = checkpoint ?? safeBody(after, player, gameTime);
+    collection.checkpoint = checkpoint ?? fallback;
+    // An airborne body is not a safe continuation if the entire map has disappeared.
+    if (!fallback) return false;
+    if (carried) { player = carried; return true; }
+    if (fallback) {
+      player = { ...fallback }; invulnerable = .9; jumpQueued = false;
+      if (mapStats) mapStats.systemRelocations++;
+      return true;
+    }
+    return false;
+  }
+
+  function onPageChange(change: PageChange): void {
+    if (state === 'destroyed' || state === 'idle') return;
+    // Course endpoints define one fixed route; retain its explicit rebuild behaviour.
+    if (mode === 'course') { pause(); void regenerate(); return; }
+    if (!level) {
+      if (state === 'unavailable') { const wanted = resumeRequested; void regenerate().then(() => { if (wanted) void start(); }); }
+      return;
+    }
+    if (change.removedSourceIds.length) {
+      const before = level.world, pruned = removeSources(before, change.removedSourceIds);
+      targetGeneration.abort(); preparation.abort(); targetBusy = false; prepared = null; worldVersion++;
+      const safe = restoreBodies(before, pruned);
+      if (collection.target) collection.target = migrateTarget(collection.target, before, pruned, gameTime);
+      graph = reuseGraph(before, pruned, graph);
+      level = { ...level, world: pruned };
+      if (!safe && state === 'playing') {
+        resumeAfterUpdate = true; state = 'transitioning'; cancelAnimationFrame(frameId); pressed.clear(); jumpQueued = false;
+      }
+      draw();
+    }
+    updateQueued = true;
+    void updateMap();
+  }
+
+  async function updateMap(): Promise<void> {
+    if (mapUpdating || !level) return;
+    const signal = generation.signal;
+    mapUpdating = true; updateControls();
+    try {
+      while (updateQueued && level && !signal.aborted) {
+        updateQueued = false;
+        const started = performance.now(), before = level.world;
+        const scanned = await scanPageAsync(root, innerWidth, innerHeight, signal, before);
+        scanned.reserved = [controls.getBoundingClientRect()];
+        let next = retainHelpers(before, scanned);
+        let nextGraph = reuseGraph(before, next, graph);
+        const missing = distributedSources(next, next.platforms.filter(platform => !nextGraph.has(platform.id))).slice(0, 12);
+        if (missing.length) {
+          const extra = await reachableJumpsAsync(next, missing.map(platform => platform.id), signal);
+          for (const [id, links] of extra) nextGraph.set(id, links);
+        }
+        if (mode === 'collect') {
+          const repaired = await connectRegionsAsync(next, nextGraph, signal);
+          next = repaired.world; nextGraph = repaired.graph;
+        }
+        throwIfAborted(signal);
+        if (!level) break;
+        const stale = getPageSnapshot(scanned).filter(snapshot => {
+          if (!snapshot.element.isConnected || !root.contains(snapshot.element)) return true;
+          const box = snapshot.element.getBoundingClientRect();
+          return Math.abs(box.left - snapshot.left) > 1 || Math.abs(box.top - snapshot.top) > 1 ||
+            Math.abs(box.width - snapshot.width) > 1 || Math.abs(box.height - snapshot.height) > 1 ||
+            surfaceSignature(snapshot.element) !== snapshot.signature;
+        });
+        if (stale.length) {
+          const fresh = removeSources(next, stale.map(snapshot => snapshot.sourceId));
+          nextGraph = reuseGraph(next, fresh, nextGraph); next = fresh; updateQueued = true;
+        }
+        const current: World = level.world;
+        // Physics kept running during the scan; carry its latest temporary-platform timers.
+        next.platformStates = new Map();
+        for (const platform of next.platforms) {
+          const old = matchingPlatform(platform, current), timer = old && current.platformStates?.get(old.id);
+          if (platform.crumble && timer) next.platformStates.set(platform.id, { ...timer });
+        }
+        targetGeneration.abort(); preparation.abort(); prepared = null; targetBusy = false; lastSearch = null;
+        worldVersion++;
+        const safe = restoreBodies(current, next);
+        const target = collection.target && migrateTarget(collection.target, current, next, gameTime);
+        const start = matchingPlatform(current.platforms.find(platform => platform.id === level!.startId), next);
+        const oldStart: Platform | undefined = current.platforms.find(platform => platform.id === level!.startId);
+        const startX: number = start && oldStart ? start.left + (level.startX - oldStart.left) /
+          Math.max(.001, oldStart.right - oldStart.left) * (start.right - start.left) : player?.x ?? level.startX;
+        const migratedPatrols: Patrol[] = [];
+        for (const patrol of patrols) {
+          const old = current.platforms.find(platform => platform.id === patrol.platformId), after = matchingPlatform(old, next);
+          if (old && after && sameSurface(old, after, current, next)) migratedPatrols.push({ ...patrol, platformId: after.id });
+        }
+        patrols = migratedPatrols;
+        graph = nextGraph;
+        level = { ...level, world: next, startId: start?.id ?? player?.groundedOn ?? level.startId, startX };
+        collection.target = target;
+        verifiedRegions.clear();
+        if (player?.groundedOn !== null && player) verifiedRegions.add(regionId(next, player.x, player.footY));
+        if (mapStats) {
+          const shapes = next.shapes ?? [];
+          mapStats.outlineCount = shapes.length; mapStats.standingSurfaceCount = next.platforms.length;
+          mapStats.smallIconCount = shapes.filter(shape => shape.detail === 'icon' && Math.max(shape.right - shape.left, shape.bottom - shape.top) <= 32).length;
+          mapStats.openedContainerCount = shapes.filter(shape => shape.openings?.length).length;
+          mapStats.openingCount = shapes.reduce((sum, shape) => sum + openingCount(shape), 0);
+          mapStats.gapPlatformCount = next.platforms.filter(platform => platform.generated === 'gap').length;
+          mapStats.scanTiming = scanned.scanTiming ?? null;
+          mapStats.eligibleOutlineCount = scanned.contourStats?.eligibleCount ?? shapes.length;
+          mapStats.omittedOutlineCount = scanned.contourStats?.omittedCount ?? 0;
+          mapStats.complexityPercent = scanned.contourStats?.complexityPercent ?? null;
+          mapStats.pageUpdateCount++; mapStats.lastPageUpdateMs = performance.now() - started;
+        }
+        stopWatching?.(); stopWatching = watchPage(root, scanned, onPageChange);
+        renderer.resize(innerWidth, innerHeight);
+        if (!safe && state === 'playing') {
+          resumeAfterUpdate = true; state = 'transitioning'; cancelAnimationFrame(frameId); pressed.clear(); jumpQueued = false;
+        } else if (safe && state === 'transitioning' && resumeAfterUpdate) {
+          resumeAfterUpdate = false; state = 'playing'; lastFrame = performance.now(); accumulator = 0;
+          frameId = requestAnimationFrame(tick);
+        }
+        if (safe && mode === 'collect') void refreshTarget(false, target ?? undefined);
+        updateControls(); draw();
+      }
+    } catch (error) {
+      if (!signal.aborted) console.error('Edgekin background map update failed', error);
+    } finally {
+      if (!signal.aborted) { mapUpdating = false; updateControls(); }
+    }
   }
 
   function onFocusIn(event: FocusEvent): void {
@@ -585,10 +805,13 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     state = 'destroyed';
     generation.abort();
     targetGeneration.abort();
+    preparation.abort(); prepared = null; targetBusy = false; mapUpdating = false; updateQueued = false;
     stopWatching?.();
     cancelAnimationFrame(frameId);
     window.clearTimeout(resizeTimer);
     window.clearTimeout(downHoldTimer);
+    for (const effect of scoreEffects) { window.clearTimeout(effect.timer); effect.node.remove(); }
+    scoreEffects.length = 0;
     window.removeEventListener('keydown', onKeyDown, true);
     window.removeEventListener('keyup', onKeyUp, true);
     window.removeEventListener('resize', onResize);
@@ -608,7 +831,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
   }
 
   function onButtonClick(): void {
-    if (state === 'playing' || state === 'selecting') pause();
+    if (state === 'playing' || state === 'selecting' || state === 'transitioning') pause();
     else start();
   }
 
@@ -621,7 +844,10 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     const average = (key: 'interval' | 'update' | 'draw'): number =>
       frameSamples.reduce((sum, sample) => sum + sample[key], 0) / count;
     const sorted = frameSamples.map(sample => sample.interval).sort((a, b) => a - b);
+    const regions = new Set(level ? regionPoints(level.world, () => .5).map(point => point.regionId) : []);
     return { ...mapStats, scanTiming: mapStats.scanTiming ? { ...mapStats.scanTiming } : null,
+      eligibleRegionCount: regions.size, verifiedRegionCount: [...verifiedRegions].filter(id => regions.has(id)).length,
+      visitedRegionCount: [...collection.rotation.visited].filter(id => regions.has(id)).length,
       frameSamples: count, averageFps: count ? 1000 / average('interval') : null,
       frameP95Ms: count ? sorted[Math.ceil(count * .95) - 1]! : null,
       updateAverageMs: count ? average('update') : null, drawAverageMs: count ? average('draw') : null };
@@ -632,6 +858,7 @@ export function mountEdgekin(options: EdgekinOptions = {}): EdgekinInstance {
     const target = collection.target;
     const goal = mode === 'course' ? level?.world.platforms.find(platform => platform.id === level?.goalId) : null;
     return { mode, state, score: collection.score, elapsedSeconds: gameTime, targetSelectionMs,
+      mapUpdating, targetPending: targetBusy, worldVersion,
       invulnerableSeconds: invulnerable,
       checkpoint: checkpoint ? { platformId: checkpoint.groundedOn, x: checkpoint.x, footY: checkpoint.footY } : null,
       target: target ? { platformId: target.platformId, x: target.x, footY: target.footY } :

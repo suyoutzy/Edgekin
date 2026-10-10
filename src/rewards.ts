@@ -4,15 +4,20 @@ import { recipeControl, randomUnit, reachableJumpsAsync } from './planner.js';
 import { hitsPatrol, patrolPosition } from './hazards.js';
 import { throwIfAborted, yieldToBrowser } from './scheduling.js';
 import type { Controls, JumpRecipe, Patrol, Platform, Player, RewardTarget, World } from './types.js';
-import { platformIsActive } from './platform-state.js';
+import { clonePlatformWorld, platformIsActive, temporary } from './platform-state.js';
+import { RegionRotation, regionId, regionPoints, reservedPoint } from './regions.js';
+import { permanentComponent } from './connections.js';
 
 interface RewardOptions {
   patrols?: readonly Patrol[];
   time?: number;
   recent?: readonly { x: number; footY: number; platformId?: number }[];
   random?: () => number;
+  rotation?: RegionRotation;
+  /** Validate a prepared target from a new live position/time. */
+  preferred?: { platformId: number; x: number };
 }
-interface Trial { player: Player; actions: Controls[]; time: number;
+interface Trial { world: World; player: Player; actions: Controls[]; time: number;
   jumpCount: number; wallJumpCount: number; crouchCount: number; hazardHit: boolean }
 interface Budget { remaining: number }
 
@@ -22,6 +27,7 @@ export function rewardDistance(world: World): number {
 
 function advance(trial: Trial, input: Controls, world: World,
   patrols: readonly Patrol[], budget: Budget): boolean {
+  world = trial.world;
   if (--budget.remaining < 0) return false;
   const next = stepPlayer(trial.player, input, world, STEP_SECONDS, trial.time);
   if (hitsPatrol(trial.player, next, world, patrols, trial.time, trial.time + STEP_SECONDS)) {
@@ -39,6 +45,7 @@ function advance(trial: Trial, input: Controls, world: World,
 
 function* walkTo(trial: Trial, platform: Platform, targetX: number, world: World,
   patrols: readonly Patrol[], budget: Budget): Generator<void, boolean> {
+  world = trial.world;
   const size = world.characterHeight;
   const maxFrames = Math.ceil(world.width / (movementSpeed(world) * .5 * STEP_SECONDS)) + 120;
   let stuck = 0;
@@ -88,9 +95,9 @@ function* replay(trial: Trial, recipe: JumpRecipe, world: World,
 
 function* timedReplay(trial: Trial, recipe: JumpRecipe, world: World,
   patrols: readonly Patrol[], budget: Budget): Generator<void, boolean> {
-  const timed = world.platforms.some(platform => platform.blink);
+  const timed = world.platforms.some(temporary);
   for (const delay of patrols.length || timed ? [0, 15, 30, 60, 90, 120] : [0]) {
-    const attempt: Trial = { player: { ...trial.player }, actions: [], time: trial.time,
+    const attempt: Trial = { world: clonePlatformWorld(trial.world), player: { ...trial.player }, actions: [], time: trial.time,
       jumpCount: 0, wallJumpCount: 0, crouchCount: 0, hazardHit: false };
     let safe = true;
     for (let frame = 0; frame < delay; frame++) {
@@ -100,6 +107,7 @@ function* timedReplay(trial: Trial, recipe: JumpRecipe, world: World,
     }
     if (safe && (yield* replay(attempt, recipe, world, patrols, budget))) {
       trial.player = attempt.player;
+      trial.world = attempt.world;
       trial.actions.push(...attempt.actions);
       trial.time = attempt.time;
       trial.jumpCount += attempt.jumpCount;
@@ -108,6 +116,38 @@ function* timedReplay(trial: Trial, recipe: JumpRecipe, world: World,
       return true;
     }
     if (!attempt.hazardHit && !timed) return false;
+    yield;
+  }
+  return false;
+}
+
+/** A platform ID can contain disconnected walking sections. Test the actual return pose. */
+function* canReturn(trial: Trial, destination: Platform, x: number, graph: Map<number, JumpRecipe[]>,
+  budget: Budget): Generator<void, boolean> {
+  const world = trial.world, byId = new Map(world.platforms.map(platform => [platform.id, platform]));
+  const paths: { id: number; recipes: JumpRecipe[]; route: number[] }[] = [
+    { id: trial.player.groundedOn!, recipes: [], route: [trial.player.groundedOn!] }];
+  const visits = new Map<number, number>();
+  for (let cursor = 0; cursor < paths.length && cursor < 128 && budget.remaining > 0; cursor++) {
+    const path = paths[cursor]!;
+    if (path.id === destination.id) {
+      const attempt: Trial = { ...trial, world: clonePlatformWorld(world), player: { ...trial.player }, actions: [] };
+      let valid = true;
+      for (let i = 0; i < path.recipes.length; i++) {
+        const recipe = path.recipes[i]!, platform = byId.get(path.route[i]!)!;
+        if (!(yield* walkTo(attempt, platform, recipe.takeoffX, world, [], budget)) ||
+          !(yield* timedReplay(attempt, recipe, world, [], budget))) { valid = false; break; }
+      }
+      if (valid && (yield* walkTo(attempt, destination, x, world, [], budget))) return true;
+    }
+    for (const recipe of graph.get(path.id) ?? []) {
+      const platform = byId.get(recipe.landedOn);
+      if (!platform || temporary(platform) || path.route.includes(platform.id) || paths.length >= 256) continue;
+      const count = visits.get(platform.id) ?? 0;
+      if (count >= 3) continue;
+      visits.set(platform.id, count + 1);
+      paths.push({ id: platform.id, recipes: [...path.recipes, recipe], route: [...path.route, platform.id] });
+    }
     yield;
   }
   return false;
@@ -135,21 +175,29 @@ function* selectReward(world: World, from: Player, graph: Map<number, JumpRecipe
     score: number; stale: number }[] = [];
   const size = world.characterHeight;
   const history = options.recent ?? [];
+  const regional = options.rotation ? regionPoints(world, random) : null;
+  const regionOrder = options.rotation?.order(regional!.map(point => point.regionId), random) ?? [];
+  const returnable = options.rotation ? permanentComponent(graph, start.id, world) : null;
   for (const path of paths) {
     const platform = byId.get(path.route.at(-1)!)!;
-    if (platform.blink) continue; // Temporary surfaces never hold a coin or a checkpoint.
+    if (returnable && !returnable.has(platform.id)) continue;
+    if (temporary(platform)) continue; // Temporary surfaces never hold a coin or a checkpoint.
     const margin = playerWidth(world) / 2 + 1;
     const width = platform.right - platform.left - margin * 2;
     if (width < 0) continue;
-    for (const fraction of [.01 + random() * .04, .08 + random() * .08, .42 + random() * .16,
-      .84 + random() * .08, .95 + random() * .04, random(), random(), random()]) {
-      const x = platform.left + margin + width * fraction, footY = surfaceY(platform, x, world);
+    const points = options.preferred ? (options.preferred.platformId === platform.id ? [options.preferred.x] : []) :
+      regional ? regional.filter(point => point.platform.id === platform.id).map(point => point.x) :
+      [.01 + random() * .04, .08 + random() * .08, .42 + random() * .16,
+        .84 + random() * .08, .95 + random() * .04, random(), random(), random()]
+        .map(fraction => platform.left + margin + width * fraction);
+    for (const x of points) {
+      const footY = surfaceY(platform, x, world);
       const distance = Math.hypot(x - from.x, footY - from.footY);
-      if (distance < world.characterHeight * 2 ||
+      if ((!options.preferred && distance < world.characterHeight * 2) ||
         (!canOccupy(world, x, footY, false, platform.id, options.time ?? 0) &&
           !canOccupy(world, x, footY, true, platform.id, options.time ?? 0)) ||
-        (x > world.width - 520 && footY < 145)) continue;
-      const regionRadius = Math.max(size * 3, Math.min(size * 6, width / 4));
+        reservedPoint(world, x, footY)) continue;
+      const regionRadius = regional ? size * 3 : Math.max(size * 3, Math.min(size * 6, width / 4));
       const visitedRegion = history.slice(-4).some(old => Math.hypot(x - old.x, footY - old.footY) < regionRadius);
       const visitedPlatform = platform.id !== start.id && history.slice(-2).some(old => old.platformId === platform.id);
       const stale = Number(visitedRegion) * 2 + Number(visitedPlatform);
@@ -182,12 +230,18 @@ function* selectReward(world: World, from: Player, graph: Map<number, JumpRecipe
     }
     return result;
   };
-  const ordered = [0, 1, 2, 3].flatMap(stale => spread(candidates.filter(candidate => candidate.stale === stale), stale ? 24 : 48));
-  const freshBudget = { remaining: 40000 }, repeatBudget = { remaining: 16000 };
+  const ordered = regional ? regionOrder.flatMap(id => {
+    const items = candidates.filter(candidate => regionId(world, candidate.x, candidate.footY) === id);
+    const median = items.length ? [...items].sort((a, b) => a.score - b.score)[Math.floor(items.length / 2)]!.score : 0;
+    const lottery = new Map(items.map(item => [item, -Math.log(Math.max(.000001, random())) / (item.score >= median ? 2 : 1)]));
+    items.sort((a, b) => a.stale - b.stale || lottery.get(a)! - lottery.get(b)!);
+    return spread(items, 24);
+  }) : [0, 1, 2, 3].flatMap(stale => spread(candidates.filter(candidate => candidate.stale === stale), stale ? 24 : 48));
+  const freshBudget = { remaining: 40000 }, repeatBudget = { remaining: 16000 }, returnBudget = { remaining: 40000 };
   for (const candidate of ordered) {
     const budget = candidate.stale ? repeatBudget : freshBudget;
     if (budget.remaining <= 0) continue;
-    const trial: Trial = { player: { ...from, jumpBufferTime: 0, wallJumpTime: 0 },
+    const trial: Trial = { world: clonePlatformWorld(world), player: { ...from, jumpBufferTime: 0, wallJumpTime: 0 },
       actions: [], time: options.time ?? 0, jumpCount: 0, wallJumpCount: 0, crouchCount: 0, hazardHit: false };
     let valid = true;
     for (let i = 0; i < candidate.path.recipes.length; i++) {
@@ -197,11 +251,12 @@ function* selectReward(world: World, from: Player, graph: Map<number, JumpRecipe
         !(yield* timedReplay(trial, recipe, world, patrols, budget))) { valid = false; break; }
     }
     if (valid && (yield* walkTo(trial, candidate.platform, candidate.x, world, patrols, budget)) &&
-      platformIsActive(candidate.platform, trial.time)) {
+      platformIsActive(candidate.platform, trial.time, trial.world.platformStates) &&
+      (!regional || (yield* canReturn(trial, start, from.x, graph, returnBudget)))) {
       return { platformId: candidate.platform.id, x: candidate.x, footY: candidate.footY,
         route: candidate.path.route, actions: trial.actions, startTime: options.time ?? 0,
         jumpCount: trial.jumpCount + trial.wallJumpCount, wallJumpCount: trial.wallJumpCount,
-        crouchCount: trial.crouchCount };
+        crouchCount: trial.crouchCount, regionId: regionId(world, candidate.x, candidate.footY) };
     }
     yield;
   }
@@ -223,17 +278,17 @@ export async function chooseRewardAsync(world: World, from: Player, graph: Map<n
   let next = iterator.next(), batch = performance.now();
   while (!next.done) {
     throwIfAborted(signal);
-    if (performance.now() - batch >= 6) { await yieldToBrowser(signal); batch = performance.now(); }
+    if (performance.now() - batch >= 4) { await yieldToBrowser(signal); batch = performance.now(); }
     next = iterator.next();
   }
   return next.value;
 }
 
-/** Retry omitted connected sources before declaring the current region exhausted. */
+/** Expand incomplete frontiers even while a local coin is still available. */
 export async function chooseRewardWithDiscoveryAsync(world: World, from: Player,
   graph: Map<number, JumpRecipe[]>, options: RewardOptions = {}, signal?: AbortSignal): Promise<RewardTarget | null> {
-  let target = await chooseRewardAsync(world, from, graph, options, signal);
-  for (let pass = 0; !target && pass < 3 && from.groundedOn !== null; pass++) {
+  let target: RewardTarget | null = null;
+  for (let pass = 0; pass < 3 && from.groundedOn !== null; pass++) {
     const visited = new Set<number>([from.groundedOn]), queue = [from.groundedOn];
     for (let cursor = 0; cursor < queue.length; cursor++) {
       for (const recipe of graph.get(queue[cursor]!) ?? []) if (!visited.has(recipe.landedOn)) {
@@ -248,8 +303,9 @@ export async function chooseRewardWithDiscoveryAsync(world: World, from: Player,
     throwIfAborted(signal);
     if (!extra.size) break;
     for (const [id, recipes] of extra) graph.set(id, recipes);
-    target = await chooseRewardAsync(world, from, graph, options, signal);
+    if (pass >= 1) break;
   }
+  target = await chooseRewardAsync(world, from, graph, options, signal);
   return target;
 }
 
@@ -258,11 +314,13 @@ export class CollectionSession {
   target: RewardTarget | null = null;
   checkpoint: Player | null = null;
   readonly recent: { x: number; footY: number; platformId: number }[] = [];
+  readonly rotation = new RegionRotation();
 
   begin(world: World, start: Platform, x: number): void {
     this.checkpoint = spawnPlayer(start, world, x);
     this.target = null;
     this.recent.length = 0;
+    this.rotation.reset();
   }
 
   collect(player: Player, world: World, seconds = 0): boolean {
@@ -270,13 +328,14 @@ export class CollectionSession {
     if (!target || player.groundedOn !== target.platformId ||
       Math.abs(player.x - target.x) > world.characterHeight * .65) return false;
     const platform = world.platforms.find(item => item.id === target.platformId);
-    if (!platform || platform.blink || !canOccupy(world, player.x, player.footY, Boolean(player.crouching), platform.id, seconds)) return false;
+    if (!platform || temporary(platform) || !canOccupy(world, player.x, player.footY, Boolean(player.crouching), platform.id, seconds)) return false;
     this.score++;
     // Preserve the actual supported position; clamping it on a tiny icon can
     // move the checkpoint to the other side of nearby geometry.
     this.checkpoint = { ...player, velocityY: 0, coyoteTime: 0, jumpBufferTime: 0,
       wallSide: 0, wallJumpTime: 0, wallJumpDirection: 0, event: undefined };
     this.recent.push({ x: target.x, footY: target.footY, platformId: target.platformId });
+    this.rotation.commit(target.regionId ?? regionId(world, target.x, target.footY));
     if (this.recent.length > 12) this.recent.shift();
     this.target = null;
     return true;

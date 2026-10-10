@@ -2,6 +2,9 @@ import { canOccupy, movementSpeed, playerWidth, spawnPlayer, stepPlayer, STEP_SE
 import type { Controls, JumpRecipe, Level, Platform, RouteMetrics, World } from './types.js';
 import { surfaceY } from './geometry.js';
 import { throwIfAborted, yieldToBrowser } from './scheduling.js';
+import { clonePlatformWorld, temporary } from './platform-state.js';
+import { distributedSources, regionPoints, reservedPoint } from './regions.js';
+import { permanentComponent } from './connections.js';
 
 export interface EndpointPair { startX: number; startY: number; goalX: number; goalY: number }
 export interface SelectionOptions {
@@ -38,8 +41,12 @@ interface SampleBudget { remaining: number }
 function sampleAction(world: World, source: Platform, takeoffX: number,
   horizontal: -1 | 1, moveFrames: number, kind: NonNullable<JumpRecipe['kind']>,
   budget: SampleBudget): JumpRecipe | null {
+  world = clonePlatformWorld(world);
   const crouch = kind === 'crouch';
   let player = spawnPlayer(source, world, takeoffX, crouch);
+  const half = playerWidth(world) / 2;
+  const bounds = { left: player.x - half, right: player.x + half,
+    top: player.footY - world.characterHeight, bottom: player.footY };
   const steps: Controls[] = [];
   let wallJumps = 0;
   let lastJump = -10;
@@ -52,7 +59,9 @@ function sampleAction(world: World, source: Platform, takeoffX: number,
       jump: Boolean(jump), ...(crouch ? { crouch: true } : {}) };
     steps.push(input);
     if (jump) lastJump = frame;
-    player = stepPlayer(player, input, world, STEP_SECONDS);
+    player = stepPlayer(player, input, world, STEP_SECONDS, frame * STEP_SECONDS);
+    bounds.left = Math.min(bounds.left, player.x - half); bounds.right = Math.max(bounds.right, player.x + half);
+    bounds.top = Math.min(bounds.top, player.footY - world.characterHeight); bounds.bottom = Math.max(bounds.bottom, player.footY);
     if (player.event === 'wall-jump') wallJumps++;
     if (frame === 0 && (kind === 'jump' || kind === 'wall-jump') && player.velocityY >= 0) return null;
     if (player.groundedOn !== null) {
@@ -62,7 +71,7 @@ function sampleAction(world: World, source: Platform, takeoffX: number,
       }
       if (kind === 'wall-jump' && !wallJumps) return null;
       return { takeoffX, horizontal, moveFrames, landedOn: player.groundedOn, landingX: player.x,
-        kind, takeoffCrouch: crouch, landingCrouch: player.crouching,
+        kind, bounds, takeoffCrouch: crouch, landingCrouch: player.crouching,
         ...(kind === 'jump' ? {} : { steps }), ...(wallJumps ? { wallJumps } : {}) };
     }
     if (player.footY > world.height + world.characterHeight) return null;
@@ -87,7 +96,7 @@ function* buildJumpGraph(world: World, sourceIds?: readonly number[]): Generator
     Array.from({ length: count }, (_, i) => items[Math.floor(i * items.length / count)]!);
   const chosen = selected ? eligible.slice(0, 48) :
     [...wide.filter(platform => platform.generated === 'gap'), ...wide.slice(0, 32), ...spread(small, 16)];
-  const sources = [...new Set([...chosen, ...eligible])].slice(0, 48);
+  const sources = selected ? eligible.slice(0, 48) : distributedSources(world, [...new Set([...chosen, ...eligible])]);
   const budget = { remaining: 600000 };
   for (const source of sources) {
     if (budget.remaining <= 0) break;
@@ -125,7 +134,7 @@ function* buildJumpGraph(world: World, sourceIds?: readonly number[]): Generator
           ordinaryShapeIds.has(platform.shapeId) : platform.top >= ordinaryMinY)),
       walls: local.walls?.filter(wall => wall.x > source.left - ordinaryReach &&
         wall.x < source.right + ordinaryReach && wall.bottom >= ordinaryMinY) };
-    const found = new Map<number, JumpRecipe>();
+    const found = new Map<number, JumpRecipe[]>();
     const quality = (recipe: JumpRecipe): number => {
       const target = world.platforms.find(platform => platform.id === recipe.landedOn)!;
       const landingMargin = Math.min(recipe.landingX - target.left, target.right - recipe.landingX);
@@ -134,10 +143,15 @@ function* buildJumpGraph(world: World, sourceIds?: readonly number[]): Generator
     };
     const retain = (recipe: JumpRecipe | null): void => {
       if (!recipe) return;
-      const previous = found.get(recipe.landedOn);
-      if (previous?.kind !== 'wall-jump' && recipe.kind === 'wall-jump' && previous) return;
-      if (!previous || (previous.kind === 'wall-jump' && recipe.kind !== 'wall-jump') ||
-        quality(recipe) > quality(previous)) found.set(recipe.landedOn, recipe);
+      const previous = found.get(recipe.landedOn) ?? [];
+      const near = previous.findIndex(item => Math.abs(item.takeoffX - recipe.takeoffX) < world.characterHeight);
+      if (near >= 0) {
+        const old = previous[near]!;
+        if ((old.kind === 'wall-jump' && recipe.kind !== 'wall-jump') ||
+          (old.kind === recipe.kind && quality(recipe) > quality(old))) previous[near] = recipe;
+      } else previous.push(recipe);
+      previous.sort((a, b) => Number(a.kind === 'wall-jump') - Number(b.kind === 'wall-jump') || quality(b) - quality(a));
+      found.set(recipe.landedOn, previous.slice(0, 2));
     };
     const left = source.left + margin;
     const right = source.right - margin;
@@ -164,7 +178,7 @@ function* buildJumpGraph(world: World, sourceIds?: readonly number[]): Generator
       }
       yield;
     }
-    graph.set(source.id, [...found.values()]);
+    graph.set(source.id, [...found.values()].flat());
   }
   return graph;
 }
@@ -184,7 +198,7 @@ export async function reachableJumpsAsync(world: World, sourceIds?: readonly num
   let next = iterator.next();
   while (!next.done) {
     throwIfAborted(signal);
-    if (performance.now() - batchStart >= 8) { await yieldToBrowser(signal); batchStart = performance.now(); }
+    if (performance.now() - batchStart >= 4) { await yieldToBrowser(signal); batchStart = performance.now(); }
     next = iterator.next();
   }
   return next.value;
@@ -196,6 +210,11 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
   const graph = settings.graph ?? reachableJumps(world, settings.jumpSources);
   const byId = new Map(world.platforms.map(platform => [platform.id, platform]));
   const candidates: { level: Level; score: number }[] = [];
+  const regionsByPlatform = new Map<number, Set<number>>();
+  if (settings.relaxed) for (const point of regionPoints(world, () => .5, 32)) {
+    const ids = regionsByPlatform.get(point.platform.id) ?? new Set(); ids.add(point.regionId); regionsByPlatform.set(point.platform.id, ids);
+  }
+  const coverageBySource = new Map<number, number>();
 
   const pointOn = (platform: Platform, position: number): number => {
     const width = platform.right - platform.left;
@@ -235,6 +254,9 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
         }
       }
     }
+    const returnable = settings.relaxed ? permanentComponent(graph, start.id, world) : new Set(paths.keys());
+    const coverage = new Set([...returnable].flatMap(id => [...regionsByPlatform.get(id) ?? []])).size;
+    coverageBySource.set(start.id, coverage);
     for (const [goalId, path] of paths) {
       if (path.recipes.length === 0) continue;
       const goal = byId.get(goalId)!;
@@ -253,7 +275,7 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
           world, startId: start.id, goalId, route: path.route, recipes: path.recipes,
           startX: pointOn(start, 0.5), goalX: pointOn(goal, 0.5),
         },
-        score,
+        score: score + (settings.relaxed ? coverage * 1000000 : 0),
       });
     }
   }
@@ -268,7 +290,8 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
         startX: pointOn(platform, 0.12), goalX: pointOn(platform, 0.88),
         route: [platform.id], recipes: [],
       },
-      score: 1000 + (platform.right - platform.left) -
+      score: (settings.relaxed ? (coverageBySource.get(platform.id) ?? regionsByPlatform.get(platform.id)?.size ?? 0) * 1000000 : 0) +
+        1000 + (platform.right - platform.left) -
         Math.abs(platform.top - world.height * 0.68) * 1.5 -
         (platform.tier === 'text' ? 200 : 0),
     });
@@ -291,7 +314,7 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
   const viable = eligible.filter(({ level }) => {
     const start = byId.get(level.startId)!;
     const goal = byId.get(level.goalId)!;
-    if (start.blink || goal.blink) return false;
+    if (temporary(start) || temporary(goal)) return false;
     const possibleSeparation = Math.max(...[0, 1].flatMap(a => [0, 1].map(b =>
       Math.hypot(pointOn(start, a) - pointOn(goal, b),
         surfaceY(start, pointOn(start, a), world) - surfaceY(goal, pointOn(goal, b), world)))));
@@ -331,7 +354,7 @@ export function chooseLevel(world: World, options: SelectionOptions | number = {
       const selected = { ...candidate, startX: pointOn(start, random()), goalX: pointOn(goal, random()) };
       if (!clearAt(world, start, selected.startX) || !clearAt(world, goal, selected.goalX)) continue;
       const underControls = (platform: Platform, x: number): boolean =>
-        x > world.width - 520 && surfaceY(platform, x, world) < 145;
+        reservedPoint(world, x, surfaceY(platform, x, world));
       if (underControls(start, selected.startX) || underControls(goal, selected.goalX)) continue;
       const firstJump = selected.recipes[0];
       if (firstJump && !walkClear(start, selected.startX, firstJump.takeoffX)) continue;

@@ -8,7 +8,20 @@ export interface Platform {
   shapeId?: number;
   segmentId?: number;
   generated?: 'gap';
+  /** Stable DOM/composite identity, retained across background scans. */
+  key?: string;
+  sourceId?: number;
+  bridge?: boolean;
+  anchorKeys?: string[];
+  anchorMix?: number;
+  crumble?: { warningSeconds: number; hiddenSeconds: number };
   blink?: { period: number; visibleSeconds: number; phase: number };
+}
+
+export interface PlatformState {
+  phase: 'ready' | 'warning' | 'hidden';
+  triggeredAt: number;
+  needsExit?: boolean;
 }
 
 export interface Shape {
@@ -25,6 +38,8 @@ export interface Shape {
   detail?: 'icon';
   control?: boolean;
   media?: boolean;
+  sourceIds?: number[];
+  key?: string;
 }
 
 export interface BoundarySegment {
@@ -41,6 +56,8 @@ export interface World {
   height: number;
   characterHeight: number;
   platforms: Platform[];
+  platformStates?: Map<number, PlatformState>;
+  reserved?: { left: number; right: number; top: number; bottom: number }[];
   walls?: { x: number; top: number; bottom: number }[];
   shapes?: Shape[];
   segments?: BoundarySegment[];
@@ -96,6 +113,7 @@ export interface JumpRecipe {
   takeoffCrouch?: boolean;
   landingCrouch?: boolean;
   wallJumps?: number;
+  bounds?: { left: number; right: number; top: number; bottom: number };
 }
 
 export interface RouteMetrics {
@@ -144,4 +162,5 @@ export interface RewardTarget {
   jumpCount: number;
   wallJumpCount: number;
   crouchCount: number;
+  regionId?: number;
 }

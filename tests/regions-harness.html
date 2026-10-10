@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Edgekin 网页区域探索验证</title>
+<style>
+body{margin:0;background:white;font:14px system-ui;color:#334455}#field{position:relative;width:100vw;height:100vh}
+.tile{position:absolute;border:1px solid #b9c6d3;border-radius:12px;background:#f5f7fb;box-sizing:border-box}
+.photo{background:#bfd4df;border-radius:18px}.circle{border-radius:50%;background:#c8dfdd}
+</style>
+<main id="field"></main>
+<script type="module">
+import {scanPageAsync} from '/dist/scanner.js';
+import {connectRegionsAsync} from '/dist/connections.js';
+import {addGapPlatformsAsync} from '/dist/playground.js';
+import {chooseLevel,reachableJumpsAsync} from '/dist/planner.js';
+import {CollectionSession,chooseRewardWithDiscoveryAsync} from '/dist/rewards.js';
+import {regionPoints} from '/dist/regions.js';
+import {stepPlayer,STEP_SECONDS} from '/dist/physics.js';
+const report={checks:[],errors:[],layouts:[]};
+const field=document.querySelector('#field');
+function box(x,y,w,h,extra=''){const node=document.createElement('div');node.className='tile '+extra;node.style.cssText=`left:${x}px;top:${y}px;width:${w}px;height:${h}px`;field.append(node);return node}
+function layout(kind){
+ field.replaceChildren();
+ const width=innerWidth,height=innerHeight;
+ if(kind==='sidebar'){
+   box(20,height*.76,width*.16,50);box(width*.4,height*.6,width*.35,80);box(width*.65,height*.3,width*.3,70);
+   box(20,height*.17,width*.3,60);box(width*.4,height*.2,width*.18,50);
+ }else if(kind==='dashboard'){
+   for(let row=0;row<2;row++)for(let col=0;col<3;col++){
+     const node=box(30+col*width/3,height*(.28+row*.38),width/3-85,90);
+     const icon=document.createElement('span');icon.className='tile circle';icon.style.cssText='left:30px;top:40px;width:26px;height:26px';node.append(icon);
+   }
+ }else{
+   for(let col=0;col<5;col++)for(let row=0;row<2;row++)
+     box(40+col*(width-80)/5,height*(.2+row*.45)+col*14,(width-80)/5-35,height*.23,'photo');
+ }
+}
+try{
+ for(const kind of ['sidebar','dashboard','waterfall']){
+  layout(kind);await new Promise(resolve=>setTimeout(resolve,1));
+  for(let seed=1;seed<=3;seed++){
+   let state=seed;const random=()=>{state=(state*1664525+1013904223)>>>0;return state/4294967296};
+   const originalRandom=Math.random;Math.random=random;
+   const source=await scanPageAsync(field);Math.random=originalRandom;
+   const base=await reachableJumpsAsync(source),connected=await connectRegionsAsync(source,base);
+   const world=await addGapPlatformsAsync(connected.world),graph=await reachableJumpsAsync(world);
+   const level=chooseLevel(world,{graph,relaxed:true,random});
+   if(!level)throw new Error(`${kind}/${seed}: level unavailable`);
+   const start=world.platforms.find(p=>p.id===level.startId),session=new CollectionSession();session.begin(world,start,level.startX);
+   let player=session.respawn(),seconds=0;const regions=[];
+   const eligible=new Set(regionPoints(world,()=>.5).map(p=>p.regionId));
+   for(let i=0;i<60;i++){
+    const target=await chooseRewardWithDiscoveryAsync(world,player,graph,{time:seconds,rotation:session.rotation,recent:session.recent,random});
+    if(!target)throw new Error(`${kind}/${seed}: exhausted at coin ${i}`);
+    for(const input of target.actions){player=stepPlayer(player,input,world,STEP_SECONDS,seconds);seconds+=STEP_SECONDS}
+    session.target=target;
+    if(!session.collect(player,world,seconds))throw new Error(`${kind}/${seed}: live replay failed at ${i}`);
+    regions.push(target.regionId);
+   }
+   const visited=new Set(regions),counts={};for(const id of regions)counts[id]=(counts[id]||0)+1;
+   const item={kind,seed,eligible:[...eligible],visited:[...visited],counts,
+    helpers:world.platforms.filter(p=>p.generated==='gap').map(p=>({x:p.left,y:p.top,bridge:!!p.bridge})),
+    repeats:regions.filter((id,i)=>i&&id===regions[i-1]).length};
+   report.layouts.push(item);
+   if(visited.size<Math.min(3,eligible.size))throw new Error(`${kind}/${seed}: still confined to ${visited.size} regions`);
+   if(item.repeats)throw new Error(`${kind}/${seed}: adjacent coins repeat a region`);
+   if(kind==='sidebar'&&(visited.size!==eligible.size||Object.values(counts).some(count=>count!==10)))
+     throw new Error(`${kind}/${seed}: connected sidebar must share sixty turns across all six regions`);
+  }
+  report.checks.push(kind+': three seeded maps, 60 live-replayed coins each');
+ }
+}catch(error){report.errors.push(error.stack||error.message)}
+const output=document.createElement('pre');output.id='edgekin-verification';output.hidden=true;output.textContent=JSON.stringify(report);document.body.append(output);
+</script>
+</html>

@@ -104,6 +104,7 @@ export function normalizeShapes(input: Shape[], size: number, clearanceHeight = 
       Math.abs(other.right - original.right) < duplicateInset && Math.abs(other.top - original.top) < duplicateInset &&
       Math.abs(other.bottom - original.bottom) < duplicateInset);
     if (duplicate) {
+      duplicate.sourceIds = [...new Set([...(duplicate.sourceIds ?? []), ...(original.sourceIds ?? [])])].sort((a, b) => a - b);
       if (original.kind === 'polygon') {
         duplicate.kind = 'polygon'; duplicate.points = original.points;
         duplicate.left = original.left; duplicate.right = original.right;
@@ -160,6 +161,7 @@ export function normalizeShapes(input: Shape[], size: number, clearanceHeight = 
   });
   const merged = [...groups.values()].map(group => {
     const shape = { ...group[0]! };
+    shape.sourceIds = [...new Set(group.flatMap(item => item.sourceIds ?? []))].sort((a, b) => a - b);
     if (group.length === 1) return shape;
     shape.left = Math.min(...group.map(item => item.left));
     shape.right = Math.max(...group.map(item => item.right));

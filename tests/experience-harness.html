@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Edgekin 0.3.2 操作与反馈验证</title>
+<title>Edgekin 0.3.3 操作与反馈验证</title>
 <style>
  body{margin:0;background:#fff;font:15px system-ui;color:#233649}
  #floor{position:absolute;left:80px;right:80px;top:125px;height:90px;background:#eaf0f5;border:1px solid #b5c8da}
@@ -33,11 +33,13 @@
    require(world.shapes.filter(shape=>shape.kind==='polygon').length===2,'CSS diamond and SVG triangle must retain real polygon outlines');
    require(world.shapes.some(shape=>shape.media&&shape.right-shape.left>=219),'A photo with a covered header must still be recognized');
    report.checks.push('CSS/SVG polygons and partly covered image recognized');
+   let floorId;
    for(let coin=1;coin<=11;coin++){
      await game.start();
+     floorId??=game.getSessionStats().player.groundedOn;
      const target=game.getSessionStats().target;
      require(target,'Continuous target must exist');
-     require(target.platformId===0,'This fixture uses only its permanent page floor');
+     require(target.platformId===floorId,'This fixture uses only its permanent page floor');
      const source=game.getSessionStats().player;
      const direction=target.x>source.x?'ArrowRight':'ArrowLeft';key(direction);
      for(let frame=0;frame<1000&&game.getSessionStats().score<coin;frame++)step();
@@ -47,6 +49,7 @@
    }
    const shadow=document.querySelector('[data-edgekin-overlay]').shadowRoot;
    const meter=shadow.querySelector('progress');
+   require([...shadow.querySelectorAll('.edgekin-score-delta')].some(node=>node.textContent==='+1'),'A pickup must animate +1 next to the score');
    require(meter.value===1&&meter.max===10,'Score 11 must advance into the second milestone');
    require(meter.getAttribute('aria-label').includes('11'),'Meter must expose score accessibly');
    report.checks.push('11 actual keyboard pickups, score milestone and paused RAF cancellation');
@@ -57,7 +60,7 @@
    key('ArrowDown');step();key('ArrowDown',false);
    require(game.getSessionStats().player.footY>rising.footY,'Airborne down must immediately descend');
    for(let i=0;i<25;i++)step();
-   require(game.getSessionStats().player.groundedOn===0,'Fast fall must land on the solid page floor');
+   require(game.getSessionStats().player.groundedOn===floorId,'Fast fall must land on the solid page floor');
    report.checks.push('ArrowDown fast fall, solid landing');
    game.pause();await game.start();
    const retries=game.getMapStats().retries;
@@ -70,6 +73,7 @@
    require(game.getSessionStats().score===10,'A natural respawn must subtract exactly one point');
    require(meter.value===10,'Score 10 must fill the previous milestone');
    require(report.scoreEvents.at(-1).reason==='respawn','Host must receive the deducted score');
+   require([...shadow.querySelectorAll('.edgekin-score-delta')].some(node=>node.textContent==='−1'),'A natural penalty must animate −1 next to the score');
    report.checks.push('off-map respawn subtracts one, score meter moves backward');
    const panel=shadow.querySelector('.edgekin-controls');
    const buttons=[...panel.querySelectorAll('button')].filter(button=>!button.hidden);

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edgekin 0.3.3 页面更新与连续收集验证</title>
+<style>
+body{margin:0;background:white;font:15px system-ui;color:#314455}
+#floor{position:absolute;left:40px;right:40px;top:160px;height:70px;border:1px solid #b5c8da;background:#eaf0f5}
+#lower{position:absolute;left:90px;right:90px;top:580px;height:80px;border:1px solid #c1c9d1;background:#f5f7fb}
+#stream{position:absolute;left:50px;top:350px}#input{position:absolute;left:45px;top:280px}
+</style>
+<main id="field"><div id="floor">页面平台</div><div id="lower">备用永久落脚面</div><div id="stream">加载文字</div></main>
+<input id="input" data-edgekin-ignore aria-label="输入测试">
+<script type="module">
+import {mountEdgekin} from '/dist/index.js';
+import {scanPage} from '/dist/scanner.js';
+import {watchPage} from '/dist/page-watch.js';
+const field=document.querySelector('#field'),floor=document.querySelector('#floor');
+const report={checks:[],errors:[],scoreEvents:[],coinRegions:[],waitingFrames:[]};
+const require=(value,message)=>{if(!value)throw new Error(message)};
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let time=performance.now(),nextId=0;const frames=new Map();
+window.requestAnimationFrame=callback=>{const id=++nextId;frames.set(id,callback);return id};
+window.cancelAnimationFrame=id=>frames.delete(id);
+function step(){time=Math.max(time,performance.now())+1000/60;const pending=[...frames.values()];frames.clear();for(const callback of pending)callback(time)}
+const key=(code,down=true)=>window.dispatchEvent(new KeyboardEvent(down?'keydown':'keyup',{code,bubbles:true,cancelable:true}));
+let pauseOnCollect=true;
+const game=mountEdgekin({root:field,hazards:false,onCollect(){if(pauseOnCollect)game.pause()},onScoreChange(score,reason){report.scoreEvents.push({score,reason})}});
+window.edgekin=game;
+async function settled(updateCount){
+  for(let i=0;i<600;i++){
+    const s=game.getSessionStats(),m=game.getMapStats();
+    if(!s.mapUpdating&&!s.targetPending&&(!updateCount||m.pageUpdateCount>=updateCount))return;
+    step();await wait(5);
+  }
+  throw new Error('Background map or target did not settle');
+}
+try{
+  const first=scanPage(field),second=scanPage(field,innerWidth,innerHeight,first);
+  require(JSON.stringify(first.platforms.map(p=>p.id))===JSON.stringify(second.platforms.map(p=>p.id)),'Unchanged DOM surfaces must keep IDs');
+  require(JSON.stringify(first.shapes.map(s=>s.openings))===JSON.stringify(second.shapes.map(s=>s.openings)),'Unchanged container entrances must remain stable');
+  report.checks.push('stable surface identities and retained entrances');
+  // Use a single broad platform while exercising real controls and non-pausing selection.
+  document.querySelector('#lower').remove();
+  await game.start();
+  for(let coin=1;coin<=6;coin++){
+    await settled();await game.start();
+    const target=game.getSessionStats().target;
+    require(target,'A broad webpage edge must support the next coin');
+    const source=game.getSessionStats().player;
+    report.coinRegions.push(Math.floor(target.x/innerWidth*3));
+    const direction=target.x>source.x?'ArrowRight':'ArrowLeft';key(direction);
+    for(let i=0;i<1000&&game.getSessionStats().score<coin;i++)step();
+    key(direction,false);require(game.getSessionStats().score===coin,'Actual key movement must collect the coin');
+  }
+  require(new Set(report.coinRegions.slice(0,3)).size===3,'First round must visit all three floor regions');
+  require(new Set(report.coinRegions.slice(3,6)).size===3,'Second round must visit all three floor regions');
+  require(report.coinRegions.every((id,i)=>!i||id!==report.coinRegions[i-1]),'Adjacent coins must use different regions');
+  report.checks.push('six keyboard coins alternate regions in complete shuffled rounds');
+
+  pauseOnCollect=false;await settled();await game.start();
+  const coin=game.getSessionStats().target,body=game.getSessionStats().player;
+  const direction=coin.x>body.x?'ArrowRight':'ArrowLeft';key(direction);
+  for(let i=0;i<1000&&game.getSessionStats().score===6;i++)step();
+  key(direction,false);
+  require(game.getSessionStats().state==='playing','Selecting after a pickup must not pause');
+  const clock=game.getSessionStats().elapsedSeconds;
+  let pendingFrames=0;
+  while(game.getSessionStats().targetPending&&pendingFrames<200){step();pendingFrames++;await wait(1)}
+  report.waitingFrames.push(pendingFrames);
+  require(game.getSessionStats().elapsedSeconds>=clock,'Selection must preserve the running clock');
+  require(game.getSessionStats().target,'A subsequent target must appear');
+  report.checks.push('post-pickup selection keeps play and physics running');
+
+  const base=game.getSessionStats(),updates=game.getMapStats().pageUpdateCount;
+  document.querySelector('#stream').append(document.createElement('span'));
+  document.querySelector('#stream').lastChild.textContent='无几何变化的新增文字';
+  await wait(180);
+  require(game.getMapStats().pageUpdateCount===updates,'Text without contour/layout change must not rebuild the map');
+  report.checks.push('streamed text without a changed contour does not rebuild');
+
+  floor.style.top='195px';
+  await settled(updates+1);
+  const moved=game.getSessionStats();
+  require(moved.state==='playing','Moving the floor must automatically continue play');
+  require(moved.score===base.score,'System migration must not charge a failure');
+  require(Math.abs(moved.player.x-base.player.x)<.001,'A vertical support move must preserve horizontal position');
+  require(Math.abs(moved.player.footY-base.player.footY-35)<.001,'Player must move with its support');
+  require(moved.target.platformId===base.target.platformId&&Math.abs(moved.target.x-base.target.x)<.001,'Valid target identity and coordinate must survive');
+  require(moved.elapsedSeconds>=base.elapsedSeconds,'Layout update must not reset the game clock');
+  report.checks.push('support and coin migration preserves score, clock and running state');
+
+  const nextUpdate=game.getMapStats().pageUpdateCount+1;
+  floor.style.left='70px';game.pause();await settled(nextUpdate);
+  require(game.getSessionStats().state==='paused','Manual pause during an update wins over auto-resume');
+  await game.start();
+  floor.style.top='220px';document.querySelector('#input').focus({preventScroll:true});
+  await settled(nextUpdate+1);
+  require(game.getSessionStats().state==='paused','Input focus during a layout update must remain paused');
+  document.querySelector('#input').blur();
+  report.checks.push('manual pause and input focus win over background completion');
+
+  // A real replacement must be handled as a system move, without score reset.
+  const replacement=floor.cloneNode(true);replacement.style.top='250px';
+  const score=game.getSessionStats().score;
+  await game.start();floor.replaceWith(replacement);
+  await settled(game.getMapStats().pageUpdateCount+1);
+  require(game.getSessionStats().state==='playing','Replaced DOM content must recover without a Continue click');
+  require(game.getSessionStats().score===score,'Replacing a support cannot subtract score');
+  require(game.getSessionStats().player&&game.getSessionStats().target,'Replacement must provide a supported player and coin');
+  report.checks.push('DOM replacement safely restores play without a score penalty');
+
+  const contents=[...field.children],blankScore=game.getSessionStats().score;
+  field.replaceChildren();await wait(180);
+  for(let i=0;i<100&&game.getSessionStats().state!=='transitioning';i++){step();await wait(5)}
+  require(game.getSessionStats().state==='transitioning','A completely blank route change must await safe terrain');
+  const blankClock=game.getSessionStats().elapsedSeconds;
+  for(let i=0;i<30;i++)step();await game.start();
+  require(game.getSessionStats().state==='transitioning','Start cannot run physics without a safe map');
+  require(game.getSessionStats().elapsedSeconds===blankClock&&game.getSessionStats().score===blankScore,'Missing terrain cannot advance time or charge a failure');
+  const restoredUpdate=game.getMapStats().pageUpdateCount+1;
+  field.append(...contents);await settled(restoredUpdate);
+  require(game.getSessionStats().state==='playing'&&game.getSessionStats().score===blankScore,'Returning terrain must restore play without a penalty');
+  report.checks.push('a blank route transition waits safely and automatically resumes');
+
+  replacement.style.top='270px';await wait(125);game.destroy();await wait(180);
+  require(!document.querySelector('[data-edgekin-overlay]'),'Destroy must cancel the background job and remove the overlay');
+  require(frames.size===0,'Destroy must cancel all game animation');
+  report.checks.push('destroy during page update cancels work and removes UI');
+
+  const paragraph=document.createElement('p');
+  paragraph.style.cssText='position:absolute;left:70px;top:350px;width:500px;height:26px;margin:0';
+  paragraph.textContent='A long text-only fallback platform changes its ink geometry.';field.append(paragraph);
+  const textWorld=scanPage(field),textFloor=textWorld.platforms.find(p=>p.tier==='text');
+  require(textFloor?.sourceId,'Text fallback must have a tracked source');
+  const changes=[],unwatch=watchPage(field,textWorld,change=>changes.push(change));
+  paragraph.textContent='Another changed text floor';await wait(180);
+  require(changes.length,'Changing ink width within a fixed DOM box must be observed');
+  paragraph.remove();await wait(180);unwatch();
+  require(changes.some(change=>change.removedSourceIds.includes(textFloor.sourceId)),'Removed text floor must be pruned');
+  report.checks.push('text fallback ink changes and removed sources are tracked');
+}catch(error){report.errors.push(error.stack||error.message);game.destroy()}
+const output=document.createElement('pre');output.id='edgekin-verification';output.dataset.edgekinIgnore='';output.hidden=true;
+output.textContent=JSON.stringify(report);document.body.append(output);
+</script>
+</html>

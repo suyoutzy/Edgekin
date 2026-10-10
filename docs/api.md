@@ -79,12 +79,18 @@ const game = mountEdgekin({ mode: 'course', onComplete() { console.log('Complete
 - 路线：跳跃、墙跳、蹲行次数，平台和分支数量，起终点距离、最小落点余量、扰动成功比例及估计执行时间。
 - 生成：扫描各阶段、规划和总耗时，以及重试次数。
 - 运行：最近 120 个动画帧的样本数量、平均 FPS、帧间隔 P95、平均物理更新与绘制耗时。
+- 探索：`eligibleRegionCount` 是几何合格区数，`verifiedRegionCount` 是当前地图已验证目标或人物所在区数，`visitedRegionCount` 是本轮实际收集访问区数。未验证或断开的区不从几何分母删掉。
+- 页面更新：`pageUpdateCount`、`lastPageUpdateMs` 和 `systemRelocations`；系统安全搬移不扣分。
 
 尚未扫描或已销毁时返回 `null`；选关失败时仍可能返回本次扫描统计。没有相应运行样本的指标也可能为 `null`。统计反映当前设备上的采样结果，不是跨设备性能保证。
 
 收集模式的路线统计随当前目标更新，来自完整动作重放；操作扰动比例和落点最小余量暂为 `null`。候选采样较多不代表玩家必须执行所有动作。
 
-`getSessionStats()` 返回新的数据对象，不会推进游戏、触发扫描或修改内部状态。`elapsedSeconds` 只在实际运行物理时增加，暂停及选择目标时冻结；`targetSelectionMs` 是最近一次收集后的目标选择耗时，未发生时为 0。选目标期间状态为 `selecting`，动作暂时停住，输入焦点、暂停和销毁仍生效。
+`getSessionStats()` 返回新的数据对象，不会推进游戏、触发扫描或修改内部状态。`elapsedSeconds` 只在实际运行物理时增加；收币后选目标期间继续运行，手动暂停或等待安全地形时冻结。`targetSelectionMs` 是最近一次目标选择耗时，未发生时为 0。
+
+新增 `targetPending`、`mapUpdating` 和 `worldVersion`，分别标记后台目标计算、地图更新与当前世界版本。普通后台工作期间状态仍为 `playing`；当前整片地形暂时消失时进入 `transitioning`，找到新落脚面后自动恢复。主动 `pause()`、输入框焦点和窗口失焦优先，后台完成不覆盖这些暂停。
+
+收集模式页面内部更新采用后台完整扫描和几何差异复用，尽量保留有效目标、人物、返回点、时钟、分数与临时平台计时，不重新抽选起点。若原支撑被移除则安全搬移，未找到合格目标时可继续移动以触发新验证。`regenerate()` 仍显式生成新关并暂停；`mode: 'course'` 的页面变化也保持重建并暂停。F5 刷新不恢复本次会话。
 
 分数只在当前挂载实例内累计，不写入浏览器存储。宿主可通过 `onScoreChange` 自行保存成绩；`onCollect` 仅通知拾取，不通知重生扣分。
 
